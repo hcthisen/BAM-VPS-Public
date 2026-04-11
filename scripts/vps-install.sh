@@ -10,6 +10,31 @@ log() {
   echo "[bam-vps] $*"
 }
 
+detect_default_app_url() {
+  if [ -n "${BAM_APP_URL:-}" ]; then
+    printf '%s\n' "$BAM_APP_URL"
+    return
+  fi
+
+  local detected_ip
+  detected_ip="$(curl -fs4 --max-time 5 https://api.ipify.org 2>/dev/null || true)"
+
+  if [ -z "$detected_ip" ] && command -v ip >/dev/null 2>&1; then
+    detected_ip="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{ for (i = 1; i <= NF; i++) if ($i == "src") { print $(i + 1); exit } }' || true)"
+  fi
+
+  if [ -z "$detected_ip" ]; then
+    detected_ip="$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | grep -v '^127\.' | head -n 1 || true)"
+  fi
+
+  if [ -n "$detected_ip" ]; then
+    printf 'http://%s\n' "$detected_ip"
+    return
+  fi
+
+  printf 'http://localhost\n'
+}
+
 require_root() {
   if [ "$(id -u)" -ne 0 ]; then
     echo "This installer must be run as root or with sudo." >&2
@@ -81,11 +106,15 @@ bootstrap_env() {
   touch "$ENV_FILE"
   chmod 600 "$ENV_FILE"
 
-  BAM_ENV_FILE="$ENV_FILE" node <<'NODE'
+  local default_app_url
+  default_app_url="$(detect_default_app_url)"
+
+  BAM_ENV_FILE="$ENV_FILE" BAM_DEFAULT_APP_URL="$default_app_url" node <<'NODE'
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 
 const envPath = process.env.BAM_ENV_FILE;
+const defaultAppUrl = process.env.BAM_DEFAULT_APP_URL || "http://localhost";
 const raw = fs.existsSync(envPath) ? fs.readFileSync(envPath, "utf8") : "";
 const env = {};
 
@@ -119,7 +148,7 @@ env.PGPORT = "5432";
 env.PGDATABASE = "bam";
 env.PGUSER = "postgres";
 env.PGPASSWORD = env.POSTGRES_PASSWORD;
-setDefault("BAM_APP_URL", "http://localhost:3000");
+setDefault("BAM_APP_URL", defaultAppUrl);
 setDefault("BAM_MASTER_KEY", crypto.randomBytes(32).toString("base64"));
 setDefault("BAM_SETUP_TOKEN", randomBase64Url(24));
 setDefault("OPENAI_TEXT_MODEL", "gpt-5.4-mini");
@@ -329,6 +358,7 @@ main() {
   configure_caddy
   configure_systemd
   log "Install complete. Dashboard: $(env_value BAM_APP_URL)"
+  log "Public traffic is served by Caddy on port 80/443. The Next.js app stays on 127.0.0.1:3000."
 }
 
 main "$@"

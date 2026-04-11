@@ -14,9 +14,15 @@ The repo is `BAM-VPS-Public`, but the installer still deploys into `/opt/bam` by
 
 This installs Node.js 22, PostgreSQL 16, and Caddy, builds the app, runs migrations, and starts everything as systemd services. Takes about 2 minutes.
 
-When it finishes, visit the URL configured in `BAM_APP_URL` to create your admin account. The setup token is stored in `/opt/bam/.env`.
+If `BAM_APP_URL` is not set before install, the installer will try to detect the VPS public IPv4 address and set `BAM_APP_URL=http://<server-ip>`. When it finishes, open the root URL from `BAM_APP_URL` to create your admin account. The setup token is stored in `/opt/bam/.env`.
 
-For production, set `BAM_APP_URL=https://your.domain.example` before running the installer. Caddy will serve the public app on ports 80/443 and the Next.js process will listen on localhost port 3000 only.
+For production, set `BAM_APP_URL=https://your.domain.example` before running the installer:
+
+```bash
+sudo bash -lc 'git clone https://github.com/hcthisen/BAM-VPS-Public.git /opt/bam && cd /opt/bam && BAM_APP_URL=https://your.domain.example bash scripts/vps-install.sh'
+```
+
+Caddy serves the public app on ports 80/443. The Next.js process listens on `127.0.0.1:3000` only, so do not browse to `http://your-server:3000/` after a VPS install.
 
 ### Manual / local setup
 
