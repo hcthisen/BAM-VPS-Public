@@ -262,25 +262,36 @@ configure_caddy() {
   log "Configuring Caddy"
   mkdir -p /etc/caddy
 
-  local app_url host
+  local app_url site_address
   app_url="$(env_value BAM_APP_URL)"
-  host="$(APP_URL="$app_url" node -e 'try { const u = new URL(process.env.APP_URL); console.log(u.hostname || ""); } catch { console.log(""); }')"
+  site_address="$(APP_URL="$app_url" node -e '
+    try {
+      const u = new URL(process.env.APP_URL);
+      const host = u.hostname || "";
+      const protocol = u.protocol;
+      const isIpv4 = /^\d{1,3}(?:\.\d{1,3}){3}$/.test(host);
+      const isIpv6 = host.includes(":");
+      const isIp = isIpv4 || isIpv6;
+      if (!host) {
+        console.log(":80");
+      } else if (protocol === "https:" && !isIp && host !== "localhost" && host !== "127.0.0.1") {
+        console.log(u.host);
+      } else if (protocol === "http:" && (host === "localhost" || host === "127.0.0.1")) {
+        console.log(":80");
+      } else {
+        console.log(`http://${u.host}`);
+      }
+    } catch {
+      console.log(":80");
+    }
+  ')"
 
-  if [ -n "$host" ] && [ "$host" != "localhost" ] && [ "$host" != "127.0.0.1" ]; then
-    cat > /etc/caddy/Caddyfile <<CADDY
+  cat > /etc/caddy/Caddyfile <<CADDY
 # BAM Control - managed by vps-install.sh
-${host} {
+${site_address} {
 	reverse_proxy 127.0.0.1:3000
 }
 CADDY
-  else
-    cat > /etc/caddy/Caddyfile <<'CADDY'
-# BAM Control - managed by vps-install.sh
-:80 {
-	reverse_proxy 127.0.0.1:3000
-}
-CADDY
-  fi
 
   caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile > /dev/null
   systemctl enable caddy > /dev/null
@@ -358,7 +369,7 @@ main() {
   configure_caddy
   configure_systemd
   log "Install complete. Dashboard: $(env_value BAM_APP_URL)"
-  log "Public traffic is served by Caddy on port 80/443. The Next.js app stays on 127.0.0.1:3000."
+  log "IP installs are served over HTTP on port 80. Domain installs use Caddy on ports 80/443. The Next.js app stays on 127.0.0.1:3000."
 }
 
 main "$@"
