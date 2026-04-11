@@ -16,6 +16,8 @@ This installs Node.js 22, PostgreSQL 16, and Caddy, builds the app, runs migrati
 
 If `BAM_APP_URL` is not set before install, the installer will try to detect the VPS public IPv4 address and set `BAM_APP_URL=http://<server-ip>`. In that case the app is served over plain HTTP on port `80`, so open `http://<server-ip>/` when the install finishes. The setup token is stored in `/opt/bam/.env`.
 
+You can later add a custom domain from the Settings page in the interface. That flow updates both Caddy and `BAM_APP_URL` for future requests.
+
 For production, set `BAM_APP_URL=https://your.domain.example` before running the installer:
 
 ```bash

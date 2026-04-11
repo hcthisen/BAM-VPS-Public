@@ -978,6 +978,7 @@ ${domain} {
 `;
 
   await applyCaddyConfig(caddyfile);
+  await updateAppUrl(`https://${domain}`);
   await setAppSetting("domain", { domain, verified: true, sslActive: true });
 
   revalidatePath("/");
@@ -986,6 +987,9 @@ ${domain} {
 
 export async function removeDomainAction() {
   await requireAdminSession();
+
+  const vpsIp = await getVpsIp();
+  const fallbackAppUrl = vpsIp && vpsIp !== "unknown" ? `http://${vpsIp}` : "http://localhost";
 
   const caddyfile = `# BAM Control - Caddy reverse proxy
 # No custom domain configured
@@ -996,6 +1000,7 @@ export async function removeDomainAction() {
 `;
 
   await applyCaddyConfig(caddyfile);
+  await updateAppUrl(fallbackAppUrl);
   await setAppSetting("domain", { domain: null, verified: false, sslActive: false });
 
   revalidatePath("/");
@@ -1012,5 +1017,17 @@ async function applyCaddyConfig(caddyfile: string) {
 
   if (result.trim() !== "OK") {
     throw new Error(`Caddy config validation failed: ${result}`);
+  }
+}
+
+async function updateAppUrl(appUrl: string) {
+  const { execFileSync } = await import("node:child_process");
+  const result = execFileSync("sudo", ["/opt/bam/scripts/app-url-update.sh", appUrl], {
+    timeout: 30000,
+    encoding: "utf-8",
+  });
+
+  if (result.trim() !== "OK") {
+    throw new Error(`App URL update failed: ${result}`);
   }
 }
