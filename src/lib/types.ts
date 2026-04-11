@@ -63,7 +63,7 @@ export type SiteRecord = {
   setupState: SiteSetupState;
   postsPerDay: number;
   newsPerDay: number;
-  imagesPerH2Section: number;
+  imageDensityPct: number;
   allowBlog: boolean;
   allowNews: boolean;
   autoPost: boolean;

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import { marked } from "marked";
 import { enforceFinalWordsBeforeFaq, isFaqHeading, orderFinalWordsBeforeFaq } from "@/lib/content/article-structure";
+import { DEFAULT_IMAGE_DENSITY_PCT, normalizeImageDensityPct, selectHeadingsForImageDensity } from "@/lib/content/image-density";
 import { insertArticleImages, type ArticleImage } from "@/lib/content/images";
 import { selectKeywordCandidatesForSlots, type KeywordSelectionCandidate } from "@/lib/content/keyword-rotation";
 import { query, withTransaction } from "@/lib/db";
@@ -59,7 +60,7 @@ type SiteContext = {
   wordpress_post_status: "draft" | "publish";
   setup_state: SiteSetupState;
   credentials_test_state: CredentialTestState;
-  images_per_h2_section: number;
+  image_density_pct: number;
   wordpress_username: string | null;
   wordpress_application_password: string | null;
   secrets_encrypted: string | null;
@@ -81,7 +82,7 @@ async function getSiteContext(siteId: string): Promise<SiteContext | null> {
         coalesce(ss.wordpress_post_status, 'publish') as wordpress_post_status,
         coalesce(su.setup_state, 'needs_setup') as setup_state,
         coalesce(su.credentials_test_state, 'untested') as credentials_test_state,
-        coalesce(ss.images_per_h2_section, 1) as images_per_h2_section,
+        coalesce(ss.image_density_pct, 100) as image_density_pct,
         sc.wordpress_username,
         sc.wordpress_application_password,
         sc.secrets_encrypted
@@ -120,24 +121,24 @@ function extractH2Headings(markdown: string) {
     .filter(Boolean);
 }
 
-async function buildBlogImagePlan(title: string, keyword: string, article: string, imagesPerH2Section: number) {
+async function buildBlogImagePlan(title: string, keyword: string, article: string, imageDensityPct: number) {
   const headings = extractH2Headings(article).filter((heading) => !isFaqHeading(heading));
+  const selectedHeadings = selectHeadingsForImageDensity(
+    headings,
+    normalizeImageDensityPct(imageDensityPct, DEFAULT_IMAGE_DENSITY_PCT),
+  );
 
-  // Build the list of images we need: 1 hero + N per H2 section
+  // Build the list of images we need: 1 hero + a density-based subset of H2 sections.
   const slots: Array<{ placementKey: string; role: string; heading: string | null }> = [
     { placementKey: "hero", role: "hero", heading: null },
   ];
 
-  if (imagesPerH2Section > 0) {
-    for (const heading of headings) {
-      for (let i = 0; i < imagesPerH2Section; i++) {
-        slots.push({
-          placementKey: `${slugify(heading)}-${i + 1}`,
-          role: "section",
-          heading,
-        });
-      }
-    }
+  for (const heading of selectedHeadings) {
+    slots.push({
+      placementKey: `${slugify(heading)}-1`,
+      role: "section",
+      heading,
+    });
   }
 
   // Use LLM to generate all image prompts at once, so it can see the full article
@@ -1995,7 +1996,7 @@ async function handleBlogDraftGenerate(contentItemId: string) {
     keyword: string;
     outline_json: Array<Record<string, unknown>>;
     seo_brief_json: Record<string, unknown> | null;
-    images_per_h2_section: number;
+    image_density_pct: number;
     tone_guide: string | null;
     audience_summary: string | null;
     niche_summary: string | null;
@@ -2005,7 +2006,7 @@ async function handleBlogDraftGenerate(contentItemId: string) {
       k.keyword,
       ci.outline_json,
       ci.seo_brief_json,
-      coalesce(ss.images_per_h2_section, 1) as images_per_h2_section,
+      coalesce(ss.image_density_pct, 100) as image_density_pct,
       sp.tone_guide,
       sp.audience_summary,
       sp.niche_summary
@@ -2112,7 +2113,7 @@ Return JSON with: excerpt (string, exactly ~20 words, ends with a hook)`,
   );
   const excerpt = String(excerptResult.excerpt ?? "").slice(0, 300);
 
-  const imagePlan = await buildBlogImagePlan(title, row.keyword, articleMarkdown, row.images_per_h2_section);
+  const imagePlan = await buildBlogImagePlan(title, row.keyword, articleMarkdown, row.image_density_pct);
 
   await query(
     `

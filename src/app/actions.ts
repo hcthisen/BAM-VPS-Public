@@ -6,6 +6,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 
 import { createInitialAdmin, loginAdmin, logoutAdmin, requireAdminSession } from "@/lib/auth/server";
+import { DEFAULT_IMAGE_DENSITY_PCT, normalizeImageDensityPct } from "@/lib/content/image-density";
 import { query, withTransaction } from "@/lib/db";
 import { getEnv } from "@/lib/env";
 import { enqueueJob, type QueueName } from "@/lib/jobs";
@@ -225,11 +226,11 @@ export async function createSiteAction(formData: FormData) {
 
   await query(
     `
-      insert into site_settings (site_id, allow_blog, allow_news, auto_post, wordpress_post_status, images_per_h2_section)
-      values ($1, false, false, false, 'publish', 1)
+      insert into site_settings (site_id, allow_blog, allow_news, auto_post, wordpress_post_status, image_density_pct)
+      values ($1, false, false, false, 'publish', $2)
       on conflict (site_id) do nothing
     `,
-    [result.rows[0].id],
+    [result.rows[0].id, DEFAULT_IMAGE_DENSITY_PCT],
   );
 
   await query(
@@ -357,7 +358,7 @@ export async function saveSiteBasicsAction(formData: FormData) {
   const locationCode = getRequiredText(formData, "locationCode");
   const postsPerDay = getPositiveInt(formData, "postsPerDay", 1, 1);
   const newsPerDay = getPositiveInt(formData, "newsPerDay", 1, 0);
-  const imagesPerH2Section = getPositiveInt(formData, "imagesPerH2Section", 1, 0);
+  const imageDensityPct = normalizeImageDensityPct(formData.get("imageDensityPct"), DEFAULT_IMAGE_DENSITY_PCT);
 
   if (!siteId || !name || !wordpressUrl || !languageCode || !locationCode) {
     redirect(getSitePath(siteId, returnTab, "Complete all site basics before continuing.") as never);
@@ -382,13 +383,13 @@ export async function saveSiteBasicsAction(formData: FormData) {
 
   await query(
     `
-      insert into site_settings (site_id, allow_blog, allow_news, auto_post, wordpress_post_status, images_per_h2_section)
+      insert into site_settings (site_id, allow_blog, allow_news, auto_post, wordpress_post_status, image_density_pct)
       values ($1, false, false, false, 'publish', $2)
       on conflict (site_id) do update
-      set images_per_h2_section = excluded.images_per_h2_section,
+      set image_density_pct = excluded.image_density_pct,
           updated_at = now()
     `,
-    [siteId, imagesPerH2Section],
+    [siteId, imageDensityPct],
   );
 
   const current = await loadSiteSetup(siteId);
@@ -969,12 +970,21 @@ export async function addDomainAction(formData: FormData) {
   }
 
   const domain = normalizeDomain(rawDomain);
+  const vpsIp = await getVpsIp();
+  const ipRedirectBlock = vpsIp && vpsIp !== "unknown"
+    ? `
+http://${vpsIp} {
+\tredir https://${domain}{uri} permanent
+}
+`
+    : "";
   const caddyfile = `# BAM Control - Managed by BAM app
 # Domain: ${domain}
 
 ${domain} {
 \treverse_proxy 127.0.0.1:3000
 }
+${ipRedirectBlock}
 `;
 
   await applyCaddyConfig(caddyfile);

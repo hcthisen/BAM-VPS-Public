@@ -264,9 +264,6 @@ build_and_seed() {
   npm run migrate
   npm run backfill:secrets
   npm run seed:reference
-
-  log "Pruning development dependencies"
-  npm prune --omit=dev
 }
 
 configure_caddy() {
@@ -337,7 +334,6 @@ Environment=NEXT_TELEMETRY_DISABLED=1
 ExecStart=/usr/bin/node ${APP_DIR}/node_modules/next/dist/bin/next start -H 127.0.0.1 -p 3000
 Restart=always
 RestartSec=5
-NoNewPrivileges=true
 
 [Install]
 WantedBy=multi-user.target

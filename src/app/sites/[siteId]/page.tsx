@@ -20,6 +20,7 @@ import { EmptyState } from "@/components/empty-state";
 import { Panel } from "@/components/panel";
 import { StatusBadge } from "@/components/status-badge";
 import { requireAdminSession } from "@/lib/auth/server";
+import { IMAGE_DENSITY_OPTION_LABELS, IMAGE_DENSITY_OPTIONS } from "@/lib/content/image-density";
 import { getSiteDetail, listSiteContent, listSiteFeeds, listSiteJobs, listSiteKeywords } from "@/lib/data/dashboard";
 import { query } from "@/lib/db";
 import type { ContentRecord, FeedRecord, JobRecord, KeywordRecord, SiteDetailRecord } from "@/lib/types";
@@ -154,8 +155,14 @@ function renderSetupTab(site: SiteDetailRecord, languages: Array<{ code: string;
               <input id="newsPerDay" name="newsPerDay" type="number" min="0" defaultValue={site.newsPerDay} required />
             </div>
             <div className="field">
-              <label htmlFor="imagesPerH2Section">Image every X H2 sections</label>
-              <input id="imagesPerH2Section" name="imagesPerH2Section" type="number" min="0" defaultValue={site.imagesPerH2Section} required />
+              <label htmlFor="imageDensityPct">Image density</label>
+              <select id="imageDensityPct" name="imageDensityPct" defaultValue={String(site.imageDensityPct)} required>
+                {IMAGE_DENSITY_OPTIONS.map((densityPct) => (
+                  <option key={densityPct} value={densityPct}>
+                    {IMAGE_DENSITY_OPTION_LABELS[densityPct]}
+                  </option>
+                ))}
+              </select>
             </div>
             <div className="field">
               <label>Base URL</label>
