@@ -1,0 +1,131 @@
+Outline - Dynamic	"Outline sections 1 to x
+Create all sections based on the provided information from [SEO Main Info] and [SEO Scraped Info].
+Create as many sections as necessary to cover the topic without creating redundant sections or repeating information.
+Each section must provide new information to the reader.
+The first section must always answer the search intent in a clear and definitive way. 
+The H2 of the first section should indicate that the reader will get their search intent fulfilled in this section.
+Sections 2 to x must be supporting sections deepening the understanding of the main keywords topic and search intent.
+
+Each selected section must fit the search intent for the main keyword."	"Decide the best outline for the article, based on the search intent.
+Always explicitly write when and how to use bullet-point lists, numbered-point lists, tables, etc.
+If there are more than 4 items, Variables, steps, instructions etc then it can be formatted in bullet-point lists or table. But only where it makes sense, and it enhances the user experience.
+
+NEVER add H3 sub-sections to more than 40% of all H2 sections. 
+If a section is to include H3 then write it out explicitly as H3 - Title + \n Description of H3 section. in the section description
+
+NEVER add lists or tables to more than 30% of all H2 sections. 
+
+Always include specific data in the outline - Dates, Numbers, Facts, Instructions, steps."	1	0	0	0	0	0	0
+Outline Info 2 - Static	"Outline sections 1 to 8
+Section 1. What is ___ / Short About
+Section 2. PROS & CONS
+Section 3. What is [object 1]
+Section 4. What is [Object 2]
+Section 5. What is [Object 3}
+Section 6. How to do ____ (Main Topic Keyword)
+  6.1. How to do... -> Option 1 - Format start with -> H3- How to do...
+  6.2, How to do... -> Option 2 - Format start with -> H3- How to do...
+  6.3. How to do... -> Option 3 - Format start with -> H3- How to do...
+  Etc. up to Option 5
+**MINIMUM 3 Steps.. 
+Always add ""H3- Title"" to all 6.x sub-topics
+Section 7. Comparison between inside notes
+Section 8. How to use ___ (Main keyword / topic) / How to benefit from ___ (Main keyword / topic)"	"Always explicitly write when to use bullet-point lists, numbered-point lists, tables, etc.
+IF -> there are more than 3 items, Variables, steps, instructions..etc must be formatted in bullet-point lists
+
+Use bullet points when it's possible in an article.
+x. Bullet points can include a paragraph inside it,
+x. Bullet points Can be 1 Word as well.
+
+NEVER add H3 sub-sections to more than 40% of all H2 sections. 
+If a section is to include an H3 then write it out explicitly as H3 - Title + \n Description of H3 section.
+Only create 1 or 2 H3 sub-sections in a section if nothing else is specified.
+
+In section 6. - Always format all sub-sections as H3 - Title + \n  description.
+
+Decide the best approach based on the article, and so it will be easy and clear to read and understand for the reader.
+
+(Being easy to understand, doesn't decide if the bullet point is long or short, it should be based only on the context inside the article.)
+
+include specific data in the outline - Dates, Numbers, Facts, Instructions, steps. from reliable sources as part of your writing style. It should happen when the H2 Header includes the words ""How"", ""When"", etc.. it should be towards a specific related H2 Header that will include some specific information for the beginner reader. and it should be part of the writing style."	1	0	0	0	0	0	0
+Title 1	"Rules
+Your headlines are of a max of 8 words or 60 characters. No more than that.
+Your headlines incorporate the provided keyword, for SEO purposes.
+Use Unique and Engaging Language
+Avoid Overcomplication and Misleading Phrasing: Ensure the headline is straightforward and accurately reflects the content of the blog post.
+
+IMPORTANT: Keep it simple. Do not use unnecessary words like 'guide' 'explained' 'unraveled' 'decoded' 'unpacked' 'Unveiling' etc."	Not Needed	0	1	0	0	0	0	0
+Intro 1	"Start with a hook (question/controversial statement), transition to the body, and present a thesis.
+Techniques: controversial openings, benefits focus, storytelling, analogies/metaphors/similes, shocking statistics, or thought-provoking questions.
+Always write intros that are between 70 and 100 words long."	Not Needed	0	0	1	0	0	0	0
+Conclusion 1	"Always use approximately 70-100 words.
+Break it up into smaller chunks for ease of reading.
+No greetings or calling out the Avatar.
+Do not start with ""congratulations"". Use the following points as a guide for the conclusion:
+- Always start with an H2 title formatted in Markdown with the title ""Final Words"" - Like this -> ## Final Words
+- Shot recap of the blog post, use blog post outline as reference. Start ""in the action"". Never start with ""looking back"", ""in conclusion"" or ""In reflection, this article..."" etc. 
+- Make it sound like a human wrote it.
+- End on a positive note"	Not Needed	0	0	0	1	0	0	0
+Excerpt 1	"Write a 20-word excerpt that ends with a cliffhanger.
+The except must be fun, engaging, and inviting, pulling in the reader to read the entire article.
+The excerpt must end with a cliffhanger, leaving the reader wanting to read more and dive in."	Not Needed	0	0	0	0	1	0	0
+News Title 1	"Follow these rules to create an effective news headline:
+- Engaging Language: Use strong, emotive words and phrases that grab attention and evoke curiosity, urgency, or interest. Avoid generic or bland language.
+- Clarity and Accuracy: Ensure the headline is straightforward, accurately reflects the content of the news story, and avoids misleading phrasing.
+- Immediacy and Action: Use active voice and present tense to convey a sense of immediacy and relevance.
+- Newsworthiness: Highlight the most surprising, significant, or impactful aspect of the story to engage readers.
+- Optional Elements: If applicable, include numbers, data points, or questions to add specificity and intrigue."	Not Needed	0	0	0	0	0	1	0
+News Re-Write Instruction 1	"You have been given a piece of content to rewrite. Your goal is to transform it into an original work that:
+
+Cannot be linked back to the original source.
+Retains all essential details and facts.
+Uses quotes and names as written in the original news article.
+Captivates the reader with high-quality writing.
+Matches the word count of the original news article.
+
+Follow these steps to achieve this in one thorough rewrite:
+Step 1: Fully Understand the Original Content
+Read the entire piece carefully to absorb its full meaning.
+Focus on the core events, facts, figures, and overarching message.
+Observe the tone, style, and organization to ensure your version diverges significantly.
+
+Step 2: Pinpoint Essential Details
+Identify all critical elements that must carry over to your rewrite, including:
+Names of people, groups, or entities involved.
+Dates, locations, and timelines of events.
+Key numbers, data points, or statistics.
+The central narrative or purpose.
+Quotes, and the full name of the person getting quoted. 
+Use this as a checklist to preserve the content’s integrity.
+
+Step 3: Rephrase Everything (except quotes, names, numbers, and details.)
+Rewrite every part of the content in your own words. Always include quotes, and the name of person being quoted.
+Restructure sentences and blend ideas in new ways to avoid echoing the original.
+Steer clear of distinctive phrases or expressions tied to the source.
+Example:
+Original: ""The project was completed ahead of schedule.""
+Rewrite: ""The initiative was finished ahead of time.""
+
+Step 4: Rearrange the Flow
+Present the information in a different sequence from the original.
+Begin with a fresh perspective or angle.
+Switch up the structure:
+Start with the outcome and work backward if the original was linear.
+
+Step 5: Keep the Tone of Voice and Writing Style
+The tone of voice and writing style is already a match for the audience. Keep it, but use Step 6 to make it better.
+
+Step 6: Hook and Hold the Reader
+Start strong: Open with an attention-grabbing introduction.
+Example: “In a twist no one saw coming, the outcome stunned everyone.”
+Use active, vivid language to paint a clear picture.
+Add relatable touches like:
+Paraphrased insights from relevant figures (sourced independently if needed).
+Descriptive details that make the story resonate.
+Keep the narrative flowing smoothly from start to finish.
+
+Key Guidelines
+Quotes: Paraphrase any quoted material or find similar statements elsewhere—don’t lift them directly unless they’re common knowledge.
+Originality: Break away from the source’s unique phrasing and flair to ensure your work stands alone.
+Engagement: Aim to make your rewrite clearer, more compelling, or more enjoyable than the original while keeping its essence intact.
+Audience: Shape the content to connect with your readers, whether they want quick facts, rich stories, or deep analysis."	Not Needed	0	0	0	0	0	0	1

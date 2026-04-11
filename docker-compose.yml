@@ -1,0 +1,103 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: bam
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "54322:5432"
+    volumes:
+      - bam_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d bam"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  rest:
+    image: postgrest/postgrest:v12.2.8
+    restart: unless-stopped
+    profiles: ["supabase"]
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGRST_DB_URI: postgres://postgres:${POSTGRES_PASSWORD}@db:5432/bam
+      PGRST_DB_SCHEMA: public
+      PGRST_DB_ANON_ROLE: postgres
+      PGRST_SERVER_PORT: 3000
+    ports:
+      - "54321:3000"
+
+  storage:
+    image: supabase/storage-api:latest
+    restart: unless-stopped
+    profiles: ["supabase"]
+    depends_on:
+      db:
+        condition: service_healthy
+      rest:
+        condition: service_started
+    environment:
+      DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD}@db:5432/bam
+      POSTGREST_URL: http://rest:3000
+      PGRST_JWT_SECRET: ${SUPABASE_JWT_SECRET:-development-jwt-secret}
+      ANON_KEY: ${SUPABASE_ANON_KEY:-development-anon-key}
+      SERVICE_KEY: ${SUPABASE_SERVICE_ROLE_KEY:-development-service-role}
+      FILE_SIZE_LIMIT: 52428800
+      TENANT_ID: stub
+      REGION: ${S3_REGION}
+      STORAGE_BACKEND: s3
+      GLOBAL_S3_BUCKET: ${S3_BUCKET}
+      GLOBAL_S3_ENDPOINT: ${S3_ENDPOINT}
+      GLOBAL_S3_FORCE_PATH_STYLE: true
+      GLOBAL_S3_PROTOCOL: https
+      AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY}
+      AWS_SECRET_ACCESS_KEY: ${S3_SECRET_KEY}
+    ports:
+      - "5000:5000"
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD}@db:5432/bam
+      PGHOST: db
+      PGPORT: 5432
+      PGDATABASE: bam
+      PGUSER: postgres
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+    command: sh -c "npm run migrate && npm run seed:reference && npm run start"
+    ports:
+      - "3000:3000"
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD}@db:5432/bam
+      PGHOST: db
+      PGPORT: 5432
+      PGDATABASE: bam
+      PGUSER: postgres
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+    command: sh -c "npm run migrate && npm run seed:reference && npm run worker"
+
+volumes:
+  bam_postgres:

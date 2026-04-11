@@ -1,0 +1,35 @@
+# BAM VPS Documentation
+
+- Official AITable API docs: https://developers.aitable.ai/api/introduction/
+- BAM rebuild plan: `PLAN.md`
+- Content logic and process architecture: `docs/content_logic_architecture.md`
+- Content process runbook: `docs/content_process.md`
+- Generated schema overview: `docs/aitable_schema_overview.md`
+- Machine-readable schema snapshot: `docs/aitable_schema_snapshot.json`
+- Refresh command: `python scripts/export_aitable_schema.py`
+- CSV export command: `python scripts/export_selected_datasheets_csv.py`
+- CSV outputs:
+  - `docs/csv/08_db_prompt_templates.csv`
+  - `docs/csv/11_db_location.csv`
+  - `docs/csv/12_db_languages.csv`
+- App commands:
+  - `npm install`
+  - `npm run bootstrap:env`
+  - `npm run migrate`
+  - `npm run seed:reference`
+  - `npm run import:aitable`
+  - `npm run dev`
+  - `npm run worker`
+  - `npm run build`
+  - `npm run test`
+  - `npm run smoke`
+- Docker:
+  - `npm run bootstrap:env`
+  - `docker compose up db`
+  - `docker compose up app worker`
+  - `docker compose --profile supabase up rest storage`
+- First-run flow:
+  - Run `npm run bootstrap:env` once on the VPS to generate bootstrap secrets.
+  - Open `/setup` and create the first admin with the generated setup token from `.env`.
+  - Add OpenAI, DataForSEO, AITable, and S3 settings from the dashboard Settings page.
+

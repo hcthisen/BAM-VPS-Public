@@ -1,0 +1,49 @@
+{
+  "name": "bam-vps",
+  "version": "0.1.0",
+  "private": true,
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "bootstrap:env": "tsx scripts/bootstrap_env.ts",
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit --incremental false",
+    "test": "vitest run",
+    "migrate": "tsx scripts/migrate.ts",
+    "backfill:secrets": "tsx scripts/backfill_site_credentials.ts",
+    "seed:reference": "tsx scripts/seed_reference_data.ts",
+    "worker": "tsx src/worker/index.ts",
+    "smoke": "tsx scripts/smoke_test.ts",
+    "smoke:wordpress": "tsx scripts/wp_smoke_test.ts",
+    "smoke:live-publish": "tsx scripts/live_publish_smoke.ts"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.883.0",
+    "@supabase/supabase-js": "^2.57.0",
+    "clsx": "^2.1.1",
+    "csv-parse": "^6.1.0",
+    "dotenv": "^16.6.1",
+    "marked": "^18.0.0",
+    "next": "^15.5.3",
+    "openai": "^5.20.2",
+    "pg": "^8.16.3",
+    "pg-boss": "^10.1.6",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1",
+    "rss-parser": "^3.13.0",
+    "tsx": "^4.20.5",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/marked": "^5.0.2",
+    "@types/node": "^24.3.1",
+    "@types/pg": "^8.15.5",
+    "@types/react": "^19.1.12",
+    "@types/react-dom": "^19.1.9",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  }
+}
