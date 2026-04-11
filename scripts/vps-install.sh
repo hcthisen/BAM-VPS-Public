@@ -225,6 +225,17 @@ env_value() {
   grep -E "^${key}=" "$ENV_FILE" | tail -n 1 | cut -d= -f2-
 }
 
+dashboard_entry_path() {
+  local admin_count
+  admin_count="$(sudo -u postgres psql -d bam -tAc "select count(*) from admin_users" 2>/dev/null | tr -d '[:space:]' || true)"
+
+  if [ "${admin_count:-0}" = "0" ]; then
+    printf '/setup\n'
+  else
+    printf '/login\n'
+  fi
+}
+
 configure_postgres() {
   log "Configuring PostgreSQL"
   local pg_pass
@@ -369,7 +380,16 @@ main() {
   build_and_seed
   configure_caddy
   configure_systemd
-  log "Install complete. Dashboard: $(env_value BAM_APP_URL)"
+  local app_url entry_path setup_token
+  app_url="$(env_value BAM_APP_URL)"
+  entry_path="$(dashboard_entry_path)"
+  setup_token="$(env_value BAM_SETUP_TOKEN)"
+  log "Install complete."
+  log "Open: ${app_url}${entry_path}"
+  if [ "$entry_path" = "/setup" ]; then
+    log "Setup token: ${setup_token}"
+  fi
+  log "Token/env file: ${ENV_FILE}"
   log "IP installs are served over HTTP on port 80. Domain installs use Caddy on ports 80/443. The Next.js app stays on 127.0.0.1:3000."
 }
 
