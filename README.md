@@ -7,8 +7,10 @@ Self-hosted WordPress content automation. Manages multiple sites with AI-generat
 On a fresh Ubuntu 22.04+ VPS:
 
 ```bash
-sudo bash -lc 'git clone https://github.com/your-org/bam-vps.git /opt/bam && cd /opt/bam && bash scripts/vps-install.sh'
+sudo bash -lc 'git clone https://github.com/hcthisen/BAM-VPS-Public.git /opt/bam && cd /opt/bam && bash scripts/vps-install.sh'
 ```
+
+The repo is `BAM-VPS-Public`, but the installer still deploys into `/opt/bam` by default unless you override `APP_DIR`.
 
 This installs Node.js 22, PostgreSQL 16, and Caddy, builds the app, runs migrations, and starts everything as systemd services. Takes about 2 minutes.
 
