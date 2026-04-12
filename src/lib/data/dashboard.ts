@@ -14,6 +14,29 @@ import type {
   SiteRecord,
 } from "@/lib/types";
 
+type KeywordSiteCountRecord = {
+  id: string;
+  name: string;
+  keywordCount: number;
+};
+
+export type KeywordListPageResult = {
+  keywords: KeywordRecord[];
+  currentPage: number;
+  pageSize: number;
+  totalCount: number;
+  totalPages: number;
+  sites: Array<{ id: string; name: string; keywordCount: number }>;
+};
+
+function clampPositiveInt(value: number, fallback: number) {
+  if (!Number.isFinite(value) || value < 1) {
+    return fallback;
+  }
+
+  return Math.floor(value);
+}
+
 export async function getDashboardMetrics(): Promise<DashboardMetrics> {
   const result = await query<DashboardMetrics>(`
     with site_metrics as (
@@ -273,6 +296,27 @@ export async function listSiteFeeds(siteId: string): Promise<FeedRecord[]> {
 }
 
 export async function listSiteKeywords(siteId: string, limit = 100): Promise<KeywordRecord[]> {
+  return (await listSiteKeywordsPage(siteId, { page: 1, pageSize: limit })).keywords;
+}
+
+export async function listSiteKeywordsPage(
+  siteId: string,
+  options: {
+    page?: number;
+    pageSize?: number;
+  } = {},
+): Promise<Omit<KeywordListPageResult, "sites">> {
+  const pageSize = Math.min(clampPositiveInt(options.pageSize ?? 100, 100), 250);
+  const requestedPage = clampPositiveInt(options.page ?? 1, 1);
+  const countResult = await query<{ total_count: number }>(
+    "select count(*)::int as total_count from keyword_candidates where site_id = $1",
+    [siteId],
+  );
+  const totalCount = countResult.rows[0]?.total_count ?? 0;
+  const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+  const currentPage = Math.min(requestedPage, totalPages);
+  const offset = (currentPage - 1) * pageSize;
+
   const result = await query<KeywordRecord>(
     `
       select
@@ -292,11 +336,18 @@ export async function listSiteKeywords(siteId: string, limit = 100): Promise<Key
       where k.site_id = $1
       order by k.updated_at desc
       limit $2
+      offset $3
     `,
-    [siteId, limit],
+    [siteId, pageSize, offset],
   );
 
-  return result.rows;
+  return {
+    keywords: result.rows,
+    currentPage,
+    pageSize,
+    totalCount,
+    totalPages,
+  };
 }
 
 export async function listSiteContent(siteId: string, limit = 100): Promise<ContentRecord[]> {
@@ -376,6 +427,49 @@ export async function listFeeds(): Promise<FeedRecord[]> {
 }
 
 export async function listKeywords(limit = 250): Promise<KeywordRecord[]> {
+  return (await listKeywordsPage({ page: 1, pageSize: limit })).keywords;
+}
+
+export async function listKeywordsPage(
+  options: {
+    page?: number;
+    pageSize?: number;
+    siteId?: string | null;
+  } = {},
+): Promise<KeywordListPageResult> {
+  const pageSize = Math.min(clampPositiveInt(options.pageSize ?? 100, 100), 250);
+  const requestedPage = clampPositiveInt(options.page ?? 1, 1);
+  const siteId = options.siteId ?? null;
+
+  const [countResult, siteCountsResult] = await Promise.all([
+    query<{ total_count: number }>(
+      `
+        select count(*)::int as total_count
+        from keyword_candidates
+        where ($1::uuid is null or site_id = $1::uuid)
+      `,
+      [siteId],
+    ),
+    query<KeywordSiteCountRecord>(
+      `
+        select
+          s.id,
+          s.name,
+          count(k.id)::int as "keywordCount"
+        from sites s
+        left join keyword_candidates k on k.site_id = s.id
+        group by s.id, s.name
+        having count(k.id) > 0
+        order by s.name asc
+      `,
+    ),
+  ]);
+
+  const totalCount = countResult.rows[0]?.total_count ?? 0;
+  const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+  const currentPage = Math.min(requestedPage, totalPages);
+  const offset = (currentPage - 1) * pageSize;
+
   const result = await query<KeywordRecord>(
     `
       select
@@ -392,13 +486,26 @@ export async function listKeywords(limit = 250): Promise<KeywordRecord[]> {
       from keyword_candidates k
       join sites s on s.id = k.site_id
       left join site_categories c on c.id = k.category_id
+      where ($2::uuid is null or k.site_id = $2::uuid)
       order by k.updated_at desc
       limit $1
+      offset $3
     `,
-    [limit],
+    [pageSize, siteId, offset],
   );
 
-  return result.rows;
+  return {
+    keywords: result.rows,
+    currentPage,
+    pageSize,
+    totalCount,
+    totalPages,
+    sites: siteCountsResult.rows.map((row) => ({
+      id: row.id,
+      name: row.name,
+      keywordCount: row.keywordCount,
+    })),
+  };
 }
 
 export async function listContent(limit = 250): Promise<ContentRecord[]> {
@@ -584,4 +691,3 @@ export async function getReferenceSummary() {
     locations: locations.rows,
   };
 }
-

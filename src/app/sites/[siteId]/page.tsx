@@ -19,10 +19,11 @@ import {
 } from "@/app/actions";
 import { EmptyState } from "@/components/empty-state";
 import { Panel } from "@/components/panel";
+import { PaginationNav } from "@/components/pagination-nav";
 import { StatusBadge } from "@/components/status-badge";
 import { requireAdminSession } from "@/lib/auth/server";
 import { IMAGE_DENSITY_OPTION_LABELS, IMAGE_DENSITY_OPTIONS } from "@/lib/content/image-density";
-import { getSiteDetail, listSiteAuthors, listSiteCategories, listSiteContent, listSiteFeeds, listSiteJobs, listSiteKeywords } from "@/lib/data/dashboard";
+import { getSiteDetail, listSiteAuthors, listSiteCategories, listSiteContent, listSiteFeeds, listSiteJobs, listSiteKeywordsPage } from "@/lib/data/dashboard";
 import { query } from "@/lib/db";
 import { formatWordPressRoleLabel } from "@/lib/providers/wordpress";
 import type { ContentRecord, FeedRecord, JobRecord, KeywordRecord, SiteAuthorRecord, SiteCategoryRecord, SiteDetailRecord } from "@/lib/types";
@@ -32,11 +33,20 @@ type SiteTab = (typeof tabs)[number];
 
 type SiteDetailPageProps = {
   params: Promise<{ siteId: string }>;
-  searchParams?: Promise<{ tab?: string; error?: string }>;
+  searchParams?: Promise<Record<string, string | string[] | undefined>>;
 };
 
 function getTab(value: string | undefined): SiteTab {
   return tabs.includes(value as SiteTab) ? (value as SiteTab) : "setup";
+}
+
+function getSingleParam(value: string | string[] | undefined) {
+  return Array.isArray(value) ? value[0] : value;
+}
+
+function parsePositiveInt(value: string | undefined, fallback: number) {
+  const parsed = Number.parseInt(value ?? "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function formatDate(value: string | null | undefined) {
@@ -699,17 +709,25 @@ export default async function SiteDetailPage({ params, searchParams }: SiteDetai
 
   const { siteId } = await params;
   const resolvedSearch = searchParams ? await searchParams : undefined;
-  const currentTab = getTab(resolvedSearch?.tab);
-  const errorMessage = resolvedSearch?.error ? decodeURIComponent(resolvedSearch.error) : null;
+  const currentTab = getTab(getSingleParam(resolvedSearch?.tab));
+  const errorParam = getSingleParam(resolvedSearch?.error);
+  const errorMessage = errorParam ? decodeURIComponent(errorParam) : null;
+  const keywordPageNumber = parsePositiveInt(getSingleParam(resolvedSearch?.keywordPage), 1);
 
-  const [site, languages, locations, authors, categories, feeds, keywords, content, jobs] = await Promise.all([
+  const [site, languages, locations, authors, categories, feeds, keywordPage, content, jobs] = await Promise.all([
     getSiteDetail(siteId),
     query<{ code: string; name: string }>("select code, name from languages order by name asc limit 250").catch(() => ({ rows: [] })),
     query<{ code: string; name: string }>("select code, name from locations where location_type = 'Country' order by name asc limit 250").catch(() => ({ rows: [] })),
     listSiteAuthors(siteId).catch(() => []),
     listSiteCategories(siteId).catch(() => []),
     listSiteFeeds(siteId).catch(() => []),
-    listSiteKeywords(siteId, 150).catch(() => []),
+    listSiteKeywordsPage(siteId, { page: keywordPageNumber, pageSize: 100 }).catch(() => ({
+      keywords: [],
+      currentPage: 1,
+      pageSize: 100,
+      totalCount: 0,
+      totalPages: 1,
+    })),
     listSiteContent(siteId, 150).catch(() => []),
     listSiteJobs(siteId, 150).catch(() => []),
   ]);
@@ -760,7 +778,17 @@ export default async function SiteDetailPage({ params, searchParams }: SiteDetai
       {currentTab === "feeds" ? renderFeedsTab(site, feeds) : null}
       {currentTab === "keywords" ? (
         <Panel title="Keywords">
-          {renderKeywordsTable(keywords)}
+          {renderKeywordsTable(keywordPage.keywords)}
+          <div className="panel-body" style={{ paddingTop: 12 }}>
+            <PaginationNav
+              pathname={`/sites/${site.id}`}
+              currentPage={keywordPage.currentPage}
+              pageSize={keywordPage.pageSize}
+              totalCount={keywordPage.totalCount}
+              pageParamName="keywordPage"
+              query={{ tab: "keywords" }}
+            />
+          </div>
         </Panel>
       ) : null}
       {currentTab === "content" ? (

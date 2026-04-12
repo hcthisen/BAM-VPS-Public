@@ -480,6 +480,101 @@ async function countUnusedKeywords(siteId: string) {
   return result.rows[0]?.available_count ?? 0;
 }
 
+type CategoryOption = {
+  id: string;
+  name: string;
+};
+
+type KeywordPipelineOptions = {
+  enqueueNext?: boolean;
+};
+
+function normalizeCategoryText(value: string | null | undefined) {
+  return String(value ?? "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function categoryTokens(value: string | null | undefined) {
+  return new Set(normalizeCategoryText(value).split(/\s+/).filter(Boolean));
+}
+
+function countTokenOverlap(left: Set<string>, right: Set<string>) {
+  let matches = 0;
+  for (const token of left) {
+    if (right.has(token)) {
+      matches += 1;
+    }
+  }
+  return matches;
+}
+
+function resolveKeywordCategoryId(
+  categories: CategoryOption[],
+  {
+    requestedName,
+    keyword,
+    clusterLabel,
+    existingCategoryId,
+  }: {
+    requestedName?: string | null;
+    keyword?: string | null;
+    clusterLabel?: string | null;
+    existingCategoryId?: string | null;
+  },
+) {
+  if (categories.length === 0) {
+    return existingCategoryId ?? null;
+  }
+
+  const requestedNormalized = normalizeCategoryText(requestedName);
+  const requestedTokens = categoryTokens(requestedName);
+  const keywordTokens = categoryTokens(keyword);
+  const clusterTokens = categoryTokens(clusterLabel);
+
+  const exactMatch = requestedNormalized
+    ? categories.find((category) => normalizeCategoryText(category.name) === requestedNormalized)
+    : null;
+  if (exactMatch) {
+    return exactMatch.id;
+  }
+
+  const scored = categories
+    .map((category) => {
+      const nameNormalized = normalizeCategoryText(category.name);
+      const nameTokens = categoryTokens(category.name);
+      let score = 0;
+
+      if (requestedNormalized) {
+        if (requestedNormalized.includes(nameNormalized) || nameNormalized.includes(requestedNormalized)) {
+          score += 40;
+        }
+        score += countTokenOverlap(requestedTokens, nameTokens) * 15;
+      }
+
+      score += countTokenOverlap(keywordTokens, nameTokens) * 5;
+      score += countTokenOverlap(clusterTokens, nameTokens) * 8;
+
+      if (nameNormalized === "general" || nameNormalized === "blog" || nameNormalized === "misc" || nameNormalized === "other") {
+        score += 2;
+      }
+
+      if (nameNormalized === "spiritual meaning") {
+        score += 3;
+      }
+
+      return { id: category.id, score };
+    })
+    .sort((left, right) => right.score - left.score);
+
+  if ((scored[0]?.score ?? 0) > 0) {
+    return scored[0]?.id ?? existingCategoryId ?? categories[0]?.id ?? null;
+  }
+
+  return existingCategoryId ?? categories[0]?.id ?? null;
+}
+
 async function handleSiteInitiate(siteId: string) {
   const site = await getSiteContext(siteId);
   if (!site) {
@@ -702,8 +797,19 @@ Return JSON with:
   const targetKeywordCount = Math.max(site.posts_per_day * 30, 5);
 
   try {
-    const generated = await handleKeywordSeedGenerate(siteId, targetKeywordCount);
-    const availableCount = await countUnusedKeywords(siteId);
+    let availableCount = await countUnusedKeywords(siteId);
+    let totalInserted = 0;
+
+    for (let attempt = 0; attempt < 2 && availableCount < targetKeywordCount; attempt += 1) {
+      const generated = await handleKeywordSeedGenerate(siteId, targetKeywordCount - availableCount, { enqueueNext: false });
+      totalInserted += generated.inserted;
+
+      await handleKeywordsExpand(siteId, { enqueueNext: false });
+      await handleKeywordsClusterReview(siteId, { enqueueNext: false });
+
+      const persisted = await handleKeywordsPersist(siteId);
+      availableCount = persisted.finalCount;
+    }
 
     if (availableCount < targetKeywordCount) {
       throw new Error(`Keyword research finished with ${availableCount} unused keywords; ${targetKeywordCount} are required.`);
@@ -723,7 +829,7 @@ Return JSON with:
               updated_at = now()
           where site_id = $1
         `,
-        [siteId, `Initial keyword inventory ready with ${availableCount} unused keywords (${generated.inserted} newly inserted).`],
+        [siteId, `Initial keyword inventory ready with ${availableCount} unused keywords (${totalInserted} newly inserted).`],
       );
     });
   } catch (error) {
@@ -803,7 +909,7 @@ async function handleKeywordsInventoryAudit(siteId?: string) {
   return { queued: result.rowCount };
 }
 
-async function handleKeywordSeedGenerate(siteId: string, batchSize: number) {
+async function handleKeywordSeedGenerate(siteId: string, batchSize: number, options: KeywordPipelineOptions = {}) {
   const site = await getSiteContext(siteId);
   if (!site) {
     throw new Error(`Site ${siteId} not found`);
@@ -899,15 +1005,18 @@ Return JSON in the form {"keywords":[{"keyword":"...","category":"...","clusterL
   await withTransaction(async (client) => {
     for (const item of generated.keywords as Array<Record<string, unknown>>) {
       const categoryName = item.category ? String(item.category) : null;
-      const categoryId = categoryName
-        ? categoriesResult.rows.find((row) => row.name.toLowerCase() === categoryName.toLowerCase())?.id ?? null
-        : null;
       const keyword = String(item.keyword ?? "").trim().toLowerCase();
       if (!keyword) {
         continue;
       }
 
-      await client.query(
+      const categoryId = resolveKeywordCategoryId(categoriesResult.rows, {
+        requestedName: categoryName,
+        keyword,
+        clusterLabel: item.clusterLabel ? String(item.clusterLabel) : null,
+      });
+
+      const insertResult = await client.query(
         `
           insert into keyword_candidates (site_id, category_id, keyword, cluster_label, source, search_volume, difficulty, metadata_json)
           values ($1, $2, $3, $4, 'generated', $5, $6, $7)
@@ -923,17 +1032,19 @@ Return JSON in the form {"keywords":[{"keyword":"...","category":"...","clusterL
           JSON.stringify({ generatedAt: new Date().toISOString() }),
         ],
       );
-      inserted += 1;
+      inserted += insertResult.rowCount ?? 0;
     }
   });
 
   // Chain to the expand step for further enrichment
-  await enqueueJob("keywords.expand", { siteId }, "site", siteId);
+  if (options.enqueueNext ?? true) {
+    await enqueueJob("keywords.expand", { siteId }, "site", siteId);
+  }
 
   return { inserted };
 }
 
-async function handleKeywordsExpand(siteId: string) {
+async function handleKeywordsExpand(siteId: string, options: KeywordPipelineOptions = {}) {
   const site = await getSiteContext(siteId);
   if (!site) {
     throw new Error(`Site ${siteId} not found`);
@@ -946,7 +1057,9 @@ async function handleKeywordsExpand(siteId: string) {
   );
 
   if (seedKeywords.rows.length === 0) {
-    await enqueueJob("keywords.cluster_review", { siteId }, "site", siteId);
+    if (options.enqueueNext ?? true) {
+      await enqueueJob("keywords.cluster_review", { siteId }, "site", siteId);
+    }
     return { expanded: 0, reason: "No recent seed keywords to expand" };
   }
 
@@ -1024,23 +1137,25 @@ async function handleKeywordsExpand(siteId: string) {
       if (seen.has(item.keyword)) continue;
       seen.add(item.keyword);
 
-      await client.query(
+      const insertResult = await client.query(
         `insert into keyword_candidates (site_id, keyword, cluster_label, source, search_volume, difficulty, metadata_json)
          values ($1, $2, 'expanded', 'dataforseo', $3, $4, $5)
          on conflict (site_id, keyword) do nothing`,
         [siteId, item.keyword, item.volume, item.difficulty, JSON.stringify({ expandedAt: new Date().toISOString(), source: item.source })],
       );
-      expanded += 1;
+      expanded += insertResult.rowCount ?? 0;
     }
   });
 
   // Chain to cluster review
-  await enqueueJob("keywords.cluster_review", { siteId }, "site", siteId);
+  if (options.enqueueNext ?? true) {
+    await enqueueJob("keywords.cluster_review", { siteId }, "site", siteId);
+  }
 
   return { expanded };
 }
 
-async function handleKeywordsClusterReview(siteId: string) {
+async function handleKeywordsClusterReview(siteId: string, options: KeywordPipelineOptions = {}) {
   const site = await getSiteContext(siteId);
   if (!site) {
     throw new Error(`Site ${siteId} not found`);
@@ -1066,7 +1181,7 @@ async function handleKeywordsClusterReview(siteId: string) {
   );
 
   const categoriesResult = await query<{ id: string; name: string }>(
-    "select id, name from site_categories where site_id = $1 and active = true",
+    "select id, name from site_categories where site_id = $1 and active = true order by usage_count asc, name asc",
     [siteId],
   );
   if (categoriesResult.rows.length === 0) {
@@ -1120,7 +1235,12 @@ Return JSON: {"approved":[{"keyword":"...","clusterLabel":"...","category":"..."
     for (const row of keywordsResult.rows) {
       const approved = approvedMap.get(row.keyword.toLowerCase());
       if (approved) {
-        const categoryId = categoriesResult.rows.find((c) => c.name.toLowerCase() === approved.category.toLowerCase())?.id ?? row.category_id;
+        const categoryId = resolveKeywordCategoryId(categoriesResult.rows, {
+          requestedName: approved.category,
+          keyword: row.keyword,
+          clusterLabel: approved.clusterLabel,
+          existingCategoryId: row.category_id,
+        });
         await client.query(
           "update keyword_candidates set cluster_label = $2, category_id = $3 where id = $1",
           [row.id, approved.clusterLabel, categoryId],
@@ -1134,7 +1254,9 @@ Return JSON: {"approved":[{"keyword":"...","clusterLabel":"...","category":"..."
   });
 
   // Chain to persist step
-  await enqueueJob("keywords.persist", { siteId }, "site", siteId);
+  if (options.enqueueNext ?? true) {
+    await enqueueJob("keywords.persist", { siteId }, "site", siteId);
+  }
 
   return { updated, removed };
 }
