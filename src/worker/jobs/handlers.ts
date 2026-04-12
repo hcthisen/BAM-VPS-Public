@@ -16,6 +16,7 @@ import { readWordPressApplicationPassword } from "@/lib/site-credentials";
 import { type CredentialTestState, type SiteSetupState, type SiteStepState } from "@/lib/sites/lifecycle";
 import { completeJob, markJobRunning } from "@/lib/services/job-runs";
 import { slugify } from "@/lib/services/slug";
+import { importExistingPostKeywords } from "@/lib/services/keyword-import";
 import { syncWordPressEntities } from "@/lib/services/wordpress-sync";
 
 /**
@@ -519,11 +520,16 @@ async function handleSiteInitiate(siteId: string) {
       throw new Error("Select at least one active WordPress author and one active category before initiating the site.");
     }
 
+    const importResult = await importExistingPostKeywords(siteId, credentials);
+
     await updateSiteSetup(siteId, {
       wordpress_sync_state: "passed",
       wordpress_sync_message:
         `Imported ${syncResult.authors} eligible authors and ${syncResult.categories} categories. ` +
-        `${syncResult.activeAuthors} authors and ${syncResult.activeCategories} categories are currently selected.`,
+        `${syncResult.activeAuthors} authors and ${syncResult.activeCategories} categories are currently selected.` +
+        (importResult.postsFound > 0
+          ? ` Found ${importResult.postsFound} existing posts; imported ${importResult.keywordsImported} keywords.`
+          : ""),
       profile_state: "running",
       profile_message: "Scraping site pages and generating site profile...",
     });
@@ -823,7 +829,7 @@ async function handleKeywordSeedGenerate(siteId: string, batchSize: number) {
 
   // Load existing and used keywords to avoid duplicates
   const existingKeywords = await query<{ keyword: string }>(
-    "select keyword from keyword_candidates where site_id = $1 order by created_at desc limit 100",
+    "select keyword from keyword_candidates where site_id = $1 order by created_at desc limit 500",
     [siteId],
   );
   const existingList = existingKeywords.rows.map((r) => r.keyword);
@@ -867,7 +873,7 @@ async function handleKeywordSeedGenerate(siteId: string, batchSize: number) {
     : "";
 
   const existingContext = existingList.length > 0
-    ? `\nExisting keywords (do NOT repeat these): ${existingList.slice(0, 50).join(", ")}`
+    ? `\nExisting keywords (do NOT repeat these): ${existingList.slice(0, 200).join(", ")}`
     : "";
 
   const generated = await generateJson(

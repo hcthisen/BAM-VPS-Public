@@ -1,6 +1,7 @@
 export const dynamic = "force-dynamic";
 
 import {
+  getAppVersionInfo,
   getDomainSettings,
   saveDataForSeoSettingsAction,
   saveOpenAiSettingsAction,
@@ -9,15 +10,17 @@ import {
 import { DomainPanel } from "@/components/domain-panel";
 import { Panel } from "@/components/panel";
 import { StatusBadge } from "@/components/status-badge";
+import { UpdatePanel } from "@/components/update-panel";
 import { requireAdminSession } from "@/lib/auth/server";
 import { getSettingsPageSummary } from "@/lib/settings";
 
 export default async function SettingsPage() {
   await requireAdminSession();
 
-  const [summary, domainSettings] = await Promise.all([
+  const [summary, domainSettings, versionInfo] = await Promise.all([
     getSettingsPageSummary(),
     getDomainSettings(),
+    getAppVersionInfo(),
   ]);
 
   return (
@@ -48,6 +51,12 @@ export default async function SettingsPage() {
               </div>
             </div>
           </div>
+        </Panel>
+      </div>
+
+      <div className="grid-2">
+        <Panel title="App Update" subtitle="Pull latest version from the repository.">
+          <UpdatePanel currentHash={versionInfo.currentHash} branch={versionInfo.branch} />
         </Panel>
       </div>
 

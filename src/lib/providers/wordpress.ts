@@ -151,6 +151,19 @@ export async function listWpCategories(credentials: WordPressCredentials) {
   );
 }
 
+export type WordPressPostSummary = {
+  id: number;
+  title: { rendered: string };
+  categories: number[];
+};
+
+export async function listWpPosts(credentials: WordPressCredentials): Promise<WordPressPostSummary[]> {
+  return wpGetPaginated<WordPressPostSummary>(
+    credentials,
+    "/wp-json/wp/v2/posts?status=publish&_fields=id,title,categories",
+  );
+}
+
 export async function createWpPost(
   credentials: WordPressCredentials,
   payload: {

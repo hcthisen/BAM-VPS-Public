@@ -1,6 +1,8 @@
 "use server";
 
+import { execFileSync, spawnSync } from "node:child_process";
 import { resolve as dnsResolve } from "node:dns/promises";
+import path from "node:path";
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
@@ -1107,8 +1109,7 @@ export async function removeDomainAction() {
 }
 
 async function applyCaddyConfig(caddyfile: string) {
-  const { execFileSync } = await import("node:child_process");
-  const result = execFileSync("sudo", ["/opt/bam/scripts/caddy-update.sh"], {
+  const result = execFileSync("sudo", ["--non-interactive", getManagedScriptPath("caddy-update.sh")], {
     input: caddyfile,
     timeout: 30000,
     encoding: "utf-8",
@@ -1120,13 +1121,169 @@ async function applyCaddyConfig(caddyfile: string) {
 }
 
 async function updateAppUrl(appUrl: string) {
-  const { execFileSync } = await import("node:child_process");
-  const result = execFileSync("sudo", ["/opt/bam/scripts/app-url-update.sh", appUrl], {
+  const result = execFileSync("sudo", ["--non-interactive", getManagedScriptPath("app-url-update.sh"), appUrl], {
     timeout: 30000,
     encoding: "utf-8",
   });
 
   if (result.trim() !== "OK") {
     throw new Error(`App URL update failed: ${result}`);
+  }
+}
+
+export type AppUpdateResult = {
+  ok: boolean;
+  message: string;
+  newVersion?: string;
+};
+
+function getManagedAppDir() {
+  return process.cwd();
+}
+
+function getManagedScriptPath(scriptName: string) {
+  return path.join(getManagedAppDir(), "scripts", scriptName);
+}
+
+function runGit(args: string[], timeout = 5000) {
+  return execFileSync("git", args, {
+    cwd: getManagedAppDir(),
+    encoding: "utf-8",
+    timeout,
+  }).trim();
+}
+
+function readCommandOutput(value: string | Buffer | null | undefined) {
+  if (typeof value === "string") {
+    return value.trim();
+  }
+
+  if (value instanceof Buffer) {
+    return value.toString("utf-8").trim();
+  }
+
+  return "";
+}
+
+function mapUpdateFailure(code: string, stderr = "") {
+  const errorMessages: Record<string, string> = {
+    GIT_MISSING: "Git is not installed on the server.",
+    NPM_MISSING: "npm is not installed on the server.",
+    NOT_A_REPO: "The deployed app directory is not a git repository.",
+    NO_REMOTE_BRANCH: "The current branch does not exist on origin.",
+    LOCAL_AHEAD: "This server has local commits that are not on origin. Resolve that over SSH before using web updates.",
+    DIVERGED: "This server has diverged from origin. Resolve the branch history over SSH before using web updates.",
+    FETCH_FAILED: "Could not fetch from the remote repository.",
+    WORKTREE_FAILED: "Could not prepare the update worktree.",
+    PULL_FAILED: "Could not update the live checkout to the fetched commit.",
+    NPM_FAILED: "Dependency installation failed while validating the new revision.",
+    BUILD_FAILED: "The new revision failed to build. The live app was left on the previous revision.",
+    SYNC_FAILED: "The new build completed, but its artifacts could not be copied into the live app directory.",
+    MIGRATE_FAILED: "Database migration failed after the new revision was prepared.",
+    BACKFILL_FAILED: "Credential backfill failed after the new revision was prepared.",
+    SEED_FAILED: "Reference data seeding failed after the new revision was prepared.",
+    RESTART_FAILED: "The new revision was prepared, but the service restart could not be scheduled.",
+  };
+
+  if (code in errorMessages) {
+    return errorMessages[code];
+  }
+
+  if (stderr.includes("a password is required") || stderr.includes("terminal is required to read the password")) {
+    return "The server is missing the passwordless sudo rule for managed scripts. Re-run scripts/vps-install.sh on the server once.";
+  }
+
+  if (stderr.includes("command not found")) {
+    return "The server update command could not be executed.";
+  }
+
+  return code ? `Update failed: ${code}` : "Update failed.";
+}
+
+export async function getAppVersionInfo(): Promise<{ currentHash: string; branch: string }> {
+  try {
+    const hash = runGit(["rev-parse", "--short", "HEAD"]);
+    const branch = runGit(["rev-parse", "--abbrev-ref", "HEAD"]);
+    return { currentHash: hash, branch };
+  } catch {
+    return { currentHash: "unknown", branch: "unknown" };
+  }
+}
+
+export async function checkForUpdatesAction(_prev: unknown): Promise<AppUpdateResult> {
+  await requireAdminSession();
+
+  try {
+    runGit(["fetch", "origin"], 15000);
+    const branch = runGit(["rev-parse", "--abbrev-ref", "HEAD"]);
+    const localHash = runGit(["rev-parse", "HEAD"]);
+    const remoteHash = runGit(["rev-parse", `origin/${branch}`]);
+
+    if (localHash === remoteHash) {
+      return { ok: true, message: "App is up to date." };
+    }
+
+    const [aheadCountRaw, behindCountRaw] = runGit(["rev-list", "--left-right", "--count", `HEAD...origin/${branch}`]).split(/\s+/);
+    const aheadCount = Number.parseInt(aheadCountRaw ?? "0", 10);
+    const behindCount = Number.parseInt(behindCountRaw ?? "0", 10);
+
+    if (aheadCount > 0 && behindCount > 0) {
+      return {
+        ok: false,
+        message: `This server has diverged from origin/${branch}. Resolve it over SSH before using web updates.`,
+      };
+    }
+
+    if (aheadCount > 0) {
+      return {
+        ok: false,
+        message: `This server has ${aheadCount} local commit(s) that are not on origin/${branch}. Push or reset them before using web updates.`,
+      };
+    }
+
+    return {
+      ok: true,
+      message: `${behindCount} update(s) available on origin/${branch}.`,
+      newVersion: remoteHash.slice(0, 7),
+    };
+  } catch {
+    return { ok: false, message: "Could not check for updates. Verify git remote is configured." };
+  }
+}
+
+export async function applyUpdateAction(_prev: unknown): Promise<AppUpdateResult> {
+  await requireAdminSession();
+
+  const result = spawnSync("sudo", ["--non-interactive", getManagedScriptPath("self-update.sh")], {
+    cwd: getManagedAppDir(),
+    timeout: 300000,
+    encoding: "utf-8",
+  });
+
+  if (result.error) {
+    return {
+      ok: false,
+      message: mapUpdateFailure("", result.error.message),
+    };
+  }
+
+  const stdout = readCommandOutput(result.stdout);
+  const stderr = readCommandOutput(result.stderr);
+  const output = stdout || stderr;
+
+  if (result.status === 0) {
+    if (output === "ALREADY_UP_TO_DATE") {
+      return { ok: true, message: "App is already up to date." };
+    }
+
+    if (output.startsWith("OK:")) {
+      const newHash = output.slice(3);
+      return { ok: true, message: `Updated to ${newHash}. The app will restart in a few seconds.`, newVersion: newHash };
+    }
+  }
+
+  return {
+    ok: false,
+    message: mapUpdateFailure(output, stderr),
   }
 }

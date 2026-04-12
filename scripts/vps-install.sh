@@ -305,10 +305,11 @@ CADDY
   systemctl enable caddy > /dev/null
   systemctl restart caddy
 
-  chmod +x "$APP_DIR/scripts/caddy-update.sh" "$APP_DIR/scripts/app-url-update.sh"
+  chmod +x "$APP_DIR/scripts/caddy-update.sh" "$APP_DIR/scripts/app-url-update.sh" "$APP_DIR/scripts/self-update.sh"
   cat > /etc/sudoers.d/bam-caddy <<SUDOERS
 ${APP_USER} ALL=(root) NOPASSWD: ${APP_DIR}/scripts/caddy-update.sh
 ${APP_USER} ALL=(root) NOPASSWD: ${APP_DIR}/scripts/app-url-update.sh
+${APP_USER} ALL=(root) NOPASSWD: ${APP_DIR}/scripts/self-update.sh
 SUDOERS
   chmod 440 /etc/sudoers.d/bam-caddy
 }
