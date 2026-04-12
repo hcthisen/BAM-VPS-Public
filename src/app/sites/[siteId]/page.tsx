@@ -14,6 +14,7 @@ import {
   saveSiteBasicsAction,
   saveSiteCredentialsAction,
   saveSiteProfileAction,
+  saveSiteWordPressSelectionsAction,
   testSiteCredentialsAction,
 } from "@/app/actions";
 import { EmptyState } from "@/components/empty-state";
@@ -21,9 +22,10 @@ import { Panel } from "@/components/panel";
 import { StatusBadge } from "@/components/status-badge";
 import { requireAdminSession } from "@/lib/auth/server";
 import { IMAGE_DENSITY_OPTION_LABELS, IMAGE_DENSITY_OPTIONS } from "@/lib/content/image-density";
-import { getSiteDetail, listSiteContent, listSiteFeeds, listSiteJobs, listSiteKeywords } from "@/lib/data/dashboard";
+import { getSiteDetail, listSiteAuthors, listSiteCategories, listSiteContent, listSiteFeeds, listSiteJobs, listSiteKeywords } from "@/lib/data/dashboard";
 import { query } from "@/lib/db";
-import type { ContentRecord, FeedRecord, JobRecord, KeywordRecord, SiteDetailRecord } from "@/lib/types";
+import { formatWordPressRoleLabel } from "@/lib/providers/wordpress";
+import type { ContentRecord, FeedRecord, JobRecord, KeywordRecord, SiteAuthorRecord, SiteCategoryRecord, SiteDetailRecord } from "@/lib/types";
 
 const tabs = ["setup", "profile", "automation", "feeds", "keywords", "content", "activity"] as const;
 type SiteTab = (typeof tabs)[number];
@@ -67,7 +69,7 @@ function renderChecklist(site: SiteDetailRecord) {
       state: site.wordpressSyncState,
       body:
         site.wordpressSyncMessage ??
-        "Authors and categories will sync after initiation starts.",
+        "The connection test imports eligible authors and categories. Initiation refreshes them one more time.",
     },
     {
       title: "Site profile",
@@ -100,8 +102,84 @@ function renderChecklist(site: SiteDetailRecord) {
   );
 }
 
-function renderSetupTab(site: SiteDetailRecord, languages: Array<{ code: string; name: string }>, locations: Array<{ code: string; name: string }>) {
-  const canInitiate = site.setupState === "ready_to_initiate" && site.credentialsTestState === "passed";
+function renderWordPressSelectionList(
+  authors: SiteAuthorRecord[],
+  categories: SiteCategoryRecord[],
+) {
+  if (!authors.length && !categories.length) {
+    return <p className="field-hint">Run Test connection to load the selectable WordPress authors and categories.</p>;
+  }
+
+  return (
+    <form action={saveSiteWordPressSelectionsAction} className="form-grid">
+      <input type="hidden" name="siteId" value={authors[0]?.siteId ?? categories[0]?.siteId ?? ""} />
+      <input type="hidden" name="returnTab" value="setup" />
+
+      <div className="field">
+        <label>Selectable authors</label>
+        <p className="field-hint">Only WordPress users with publish-capable roles are imported. Uncheck anyone BAM should never publish under.</p>
+        <div className="selection-list">
+          {authors.length ? (
+            authors.map((author) => (
+              <label key={author.id} className="checkbox-field">
+                <input type="checkbox" name="activeAuthorIds" value={author.id} defaultChecked={author.active} />
+                <span className="selection-copy">
+                  <span>{author.name}</span>
+                  <span className="field-hint">
+                    {[formatWordPressRoleLabel(author.wordpressRole), author.email].filter(Boolean).join(" - ") || "Eligible author"}
+                  </span>
+                </span>
+              </label>
+            ))
+          ) : (
+            <p className="field-hint">No eligible WordPress authors have been imported yet.</p>
+          )}
+        </div>
+      </div>
+
+      <div className="field">
+        <label>Selectable categories</label>
+        <p className="field-hint">Unchecked categories are ignored for keyword generation, keyword counts, and future uploads.</p>
+        <div className="selection-list">
+          {categories.length ? (
+            categories.map((category) => (
+              <label key={category.id} className="checkbox-field">
+                <input type="checkbox" name="activeCategoryIds" value={category.id} defaultChecked={category.active} />
+                <span className="selection-copy">
+                  <span>{category.name}</span>
+                  <span className="field-hint">{category.slug ? `Slug: ${category.slug}` : "WordPress category"}</span>
+                </span>
+              </label>
+            ))
+          ) : (
+            <p className="field-hint">No WordPress categories have been imported yet.</p>
+          )}
+        </div>
+      </div>
+
+      <div className="chip-row">
+        <button className="button secondary" type="submit">
+          Save author and category selection
+        </button>
+      </div>
+    </form>
+  );
+}
+
+function renderSetupTab(
+  site: SiteDetailRecord,
+  languages: Array<{ code: string; name: string }>,
+  locations: Array<{ code: string; name: string }>,
+  authors: SiteAuthorRecord[],
+  categories: SiteCategoryRecord[],
+) {
+  const activeAuthorCount = authors.filter((author) => author.active).length;
+  const activeCategoryCount = categories.filter((category) => category.active).length;
+  const canInitiate =
+    site.setupState === "ready_to_initiate" &&
+    site.credentialsTestState === "passed" &&
+    activeAuthorCount > 0 &&
+    activeCategoryCount > 0;
 
   return (
     <>
@@ -177,7 +255,7 @@ function renderSetupTab(site: SiteDetailRecord, languages: Array<{ code: string;
           </form>
         </Panel>
 
-        <Panel title="2. WordPress Access" subtitle="WordPress application password.">
+        <Panel title="2. WordPress Access" subtitle="Credentials, imported authors, and imported categories.">
           <form action={saveSiteCredentialsAction} className="form-grid">
             <input type="hidden" name="siteId" value={site.id} />
             <input type="hidden" name="returnTab" value="setup" />
@@ -212,6 +290,13 @@ function renderSetupTab(site: SiteDetailRecord, languages: Array<{ code: string;
             </form>
             <p>{site.credentialsTestMessage ?? "No WordPress connection test has been run yet."}</p>
           </div>
+          <div className="footer-note">
+            <div className="chip-row">
+              <span className="chip">{activeAuthorCount} active authors</span>
+              <span className="chip">{activeCategoryCount} active categories</span>
+            </div>
+            {renderWordPressSelectionList(authors, categories)}
+          </div>
         </Panel>
       </div>
 
@@ -224,7 +309,7 @@ function renderSetupTab(site: SiteDetailRecord, languages: Array<{ code: string;
               Initiate site
             </button>
             {!canInitiate ? (
-              <span className="chip">Complete basics and pass the credential test first.</span>
+              <span className="chip">Complete basics, pass the credential test, and keep at least one author and category active.</span>
             ) : (
               <span className="chip">Ready to begin.</span>
             )}
@@ -617,10 +702,12 @@ export default async function SiteDetailPage({ params, searchParams }: SiteDetai
   const currentTab = getTab(resolvedSearch?.tab);
   const errorMessage = resolvedSearch?.error ? decodeURIComponent(resolvedSearch.error) : null;
 
-  const [site, languages, locations, feeds, keywords, content, jobs] = await Promise.all([
+  const [site, languages, locations, authors, categories, feeds, keywords, content, jobs] = await Promise.all([
     getSiteDetail(siteId),
     query<{ code: string; name: string }>("select code, name from languages order by name asc limit 250").catch(() => ({ rows: [] })),
     query<{ code: string; name: string }>("select code, name from locations where location_type = 'Country' order by name asc limit 250").catch(() => ({ rows: [] })),
+    listSiteAuthors(siteId).catch(() => []),
+    listSiteCategories(siteId).catch(() => []),
     listSiteFeeds(siteId).catch(() => []),
     listSiteKeywords(siteId, 150).catch(() => []),
     listSiteContent(siteId, 150).catch(() => []),
@@ -667,7 +754,7 @@ export default async function SiteDetailPage({ params, searchParams }: SiteDetai
         ))}
       </nav>
 
-      {currentTab === "setup" ? renderSetupTab(site, languages.rows, locations.rows) : null}
+      {currentTab === "setup" ? renderSetupTab(site, languages.rows, locations.rows, authors, categories) : null}
       {currentTab === "profile" ? renderProfileTab(site) : null}
       {currentTab === "automation" ? renderAutomationTab(site) : null}
       {currentTab === "feeds" ? renderFeedsTab(site, feeds) : null}

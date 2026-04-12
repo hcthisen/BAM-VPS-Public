@@ -11,11 +11,12 @@ import { dataForSeoPost, scrapePageContent } from "@/lib/providers/dataforseo";
 import { generateArticle, generateImages, generateJson } from "@/lib/providers/openai";
 import { parseFeed } from "@/lib/providers/rss";
 import { downloadAsset, uploadAsset } from "@/lib/providers/storage";
+import { createWpPost, findWpPostBySlug, uploadWpMedia, updateWpPost, type WordPressCredentials } from "@/lib/providers/wordpress";
 import { readWordPressApplicationPassword } from "@/lib/site-credentials";
 import { type CredentialTestState, type SiteSetupState, type SiteStepState } from "@/lib/sites/lifecycle";
-import { createWpPost, findWpPostBySlug, uploadWpMedia, updateWpPost, getWpCurrentUser, listWpCategories, listWpUsers, type WordPressCredentials } from "@/lib/providers/wordpress";
 import { completeJob, markJobRunning } from "@/lib/services/job-runs";
 import { slugify } from "@/lib/services/slug";
+import { syncWordPressEntities } from "@/lib/services/wordpress-sync";
 
 /**
  * Base writing style guide — the foundation all site-specific tone guides build on.
@@ -420,47 +421,6 @@ async function fetchSiteCorpus(baseUrl: string) {
     .join("\n\n");
 }
 
-async function syncWordPressEntities(siteId: string, credentials: WordPressCredentials) {
-  const [users, categories] = await Promise.all([
-    listWpUsers(credentials).catch(async () => [await getWpCurrentUser(credentials)]),
-    listWpCategories(credentials),
-  ]);
-
-  await withTransaction(async (client) => {
-    for (const user of users) {
-      await client.query(
-        `
-          insert into site_authors (site_id, wp_author_id, name, slug, email, active)
-          values ($1, $2, $3, $4, $5, true)
-          on conflict (site_id, name) do update
-          set wp_author_id = excluded.wp_author_id,
-              slug = excluded.slug,
-              email = excluded.email,
-              active = true
-        `,
-        [siteId, user.id, user.name, user.slug, user.email ?? null],
-      );
-    }
-
-    for (const category of categories) {
-      await client.query(
-        `
-          insert into site_categories (site_id, wp_category_id, name, slug, description, active)
-          values ($1, $2, $3, $4, $5, true)
-          on conflict (site_id, name) do update
-          set wp_category_id = excluded.wp_category_id,
-              slug = excluded.slug,
-              description = excluded.description,
-              active = true
-        `,
-        [siteId, category.id, category.name, category.slug, category.description ?? null],
-      );
-    }
-  });
-
-  return { users: users.length, categories: categories.length };
-}
-
 async function writeSiteProfile(siteId: string, profile: Record<string, unknown>) {
   // Build readable text versions for the simple text columns
   const toneGuide = profile.toneGuide;
@@ -508,9 +468,10 @@ async function writeSiteProfile(siteId: string, profile: Record<string, unknown>
 async function countUnusedKeywords(siteId: string) {
   const result = await query<{ available_count: number }>(
     `
-      select count(*) filter (where used = false)::int as available_count
-      from keyword_candidates
-      where site_id = $1
+      select count(k.id) filter (where k.used = false and k.category_id is not null and coalesce(sc.active, false) = true)::int as available_count
+      from keyword_candidates k
+      left join site_categories sc on sc.id = k.category_id
+      where k.site_id = $1
     `,
     [siteId],
   );
@@ -554,9 +515,15 @@ async function handleSiteInitiate(siteId: string) {
 
   try {
     const syncResult = await syncWordPressEntities(siteId, credentials);
+    if (syncResult.activeAuthors < 1 || syncResult.activeCategories < 1) {
+      throw new Error("Select at least one active WordPress author and one active category before initiating the site.");
+    }
+
     await updateSiteSetup(siteId, {
       wordpress_sync_state: "passed",
-      wordpress_sync_message: `Synced ${syncResult.users} WordPress authors and ${syncResult.categories} categories.`,
+      wordpress_sync_message:
+        `Imported ${syncResult.authors} eligible authors and ${syncResult.categories} categories. ` +
+        `${syncResult.activeAuthors} authors and ${syncResult.activeCategories} categories are currently selected.`,
       profile_state: "running",
       profile_message: "Scraping site pages and generating site profile...",
     });
@@ -788,15 +755,34 @@ async function handleKeywordsInventoryAudit(siteId?: string) {
         s.id,
         greatest((coalesce(ss.allow_blog, true)::int * greatest(s.posts_per_day, 1) * 30), 5) as desired_count,
         greatest(s.posts_per_day, 1) * 3 as low_water_mark,
-        count(k.id) filter (where coalesce(k.used, false) = false) as available_count
+        count(k.id) filter (
+          where coalesce(k.used, false) = false
+            and k.category_id is not null
+            and coalesce(sc.active, false) = true
+        ) as available_count
       from sites s
       left join site_settings ss on ss.site_id = s.id
       left join site_setup su on su.site_id = s.id
       left join keyword_candidates k on k.site_id = s.id
+      left join site_categories sc on sc.id = k.category_id
       where coalesce(su.setup_state, 'needs_setup') = 'ready'
         and coalesce(su.credentials_test_state, 'untested') = 'passed'
         and coalesce(ss.allow_blog, false) = true
         and ($1::uuid is null or s.id = $1::uuid)
+        and exists (
+          select 1
+          from site_authors sa
+          where sa.site_id = s.id
+            and sa.active = true
+            and sa.wp_author_id is not null
+        )
+        and exists (
+          select 1
+          from site_categories sc2
+          where sc2.site_id = s.id
+            and sc2.active = true
+            and sc2.wp_category_id is not null
+        )
       group by s.id, ss.allow_blog, s.posts_per_day
     )
     select id, (desired_count - available_count)::int as missing_count, desired_count::int as target_count
@@ -831,6 +817,9 @@ async function handleKeywordSeedGenerate(siteId: string, batchSize: number) {
     "select id, name from site_categories where site_id = $1 and active = true order by usage_count asc, name asc limit 20",
     [siteId],
   );
+  if (categoriesResult.rows.length === 0) {
+    throw new Error("No active WordPress categories are selected for this site.");
+  }
 
   // Load existing and used keywords to avoid duplicates
   const existingKeywords = await query<{ keyword: string }>(
@@ -1074,6 +1063,9 @@ async function handleKeywordsClusterReview(siteId: string) {
     "select id, name from site_categories where site_id = $1 and active = true",
     [siteId],
   );
+  if (categoriesResult.rows.length === 0) {
+    throw new Error("No active WordPress categories are selected for this site.");
+  }
 
   const profile = profileResult.rows[0];
   const niche = profile?.niche_summary ?? site.name;
@@ -1297,6 +1289,20 @@ async function handleNewsCandidateSelect(siteId?: string) {
         and coalesce(su.credentials_test_state, 'untested') = 'passed'
         and coalesce(ss.allow_news, false) = true
         and ($1::uuid is null or s.id = $1::uuid)
+        and exists (
+          select 1
+          from site_authors sa
+          where sa.site_id = s.id
+            and sa.active = true
+            and sa.wp_author_id is not null
+        )
+        and exists (
+          select 1
+          from site_categories sc
+          where sc.site_id = s.id
+            and sc.active = true
+            and sc.wp_category_id is not null
+        )
       group by s.id, s.news_per_day
     ),
     candidates as (
@@ -1376,12 +1382,11 @@ Return JSON: {"selected": [1, 3, 5]} — the numbers of the items you selected, 
 
     for (const row of selectedItems) {
       const authorId = await selectAuthorForSite(row.site_id);
+      const categoryId = await selectActiveCategoryForSite(row.site_id);
 
-      const defaultCat = await query<{ id: string }>(
-        "select id from site_categories where site_id = $1 order by usage_count asc, created_at asc limit 1",
-        [row.site_id],
-      );
-      const categoryId = defaultCat.rows[0]?.id ?? null;
+      if (!authorId || !categoryId) {
+        continue;
+      }
 
       const insert = await query<{ id: string }>(
         `
@@ -1630,13 +1635,30 @@ async function selectAuthorForSite(siteId: string): Promise<string | null> {
      set usage_count = usage_count + 1
      where id = (
        select id from site_authors
-       where site_id = $1 and active = true
+       where site_id = $1 and active = true and wp_author_id is not null
        order by usage_count asc, created_at asc
        limit 1
      )
      returning id`,
     [siteId],
   );
+  return result.rows[0]?.id ?? null;
+}
+
+async function selectActiveCategoryForSite(siteId: string): Promise<string | null> {
+  const result = await query<{ id: string }>(
+    `
+      select id
+      from site_categories
+      where site_id = $1
+        and active = true
+        and wp_category_id is not null
+      order by usage_count asc, created_at asc
+      limit 1
+    `,
+    [siteId],
+  );
+
   return result.rows[0]?.id ?? null;
 }
 
@@ -1681,6 +1703,20 @@ async function handleBlogCandidateSelect(siteId?: string) {
       and coalesce(su.credentials_test_state, 'untested') = 'passed'
       and coalesce(ss.allow_blog, false) = true
       and ($1::uuid is null or s.id = $1::uuid)
+      and exists (
+        select 1
+        from site_authors sa
+        where sa.site_id = s.id
+          and sa.active = true
+          and sa.wp_author_id is not null
+      )
+      and exists (
+        select 1
+        from site_categories sc
+        where sc.site_id = s.id
+          and sc.active = true
+          and sc.wp_category_id is not null
+      )
     group by s.id, s.posts_per_day
     having greatest(
       s.posts_per_day - count(ci.id) filter (
@@ -1730,6 +1766,8 @@ async function handleBlogCandidateSelect(siteId?: string) {
         left join site_categories sc on sc.id = k.category_id
         where k.site_id = $1
           and k.used = false
+          and k.category_id is not null
+          and coalesce(sc.active, false) = true
           and existing.id is null
         order by k.created_at asc
         limit $2
@@ -1751,6 +1789,9 @@ async function handleBlogCandidateSelect(siteId?: string) {
 
     for (const row of selectedItems) {
       const authorId = await selectAuthorForSite(site.site_id);
+      if (!authorId) {
+        continue;
+      }
 
       const insert = await query<{ id: string }>(
         `
@@ -2449,24 +2490,52 @@ async function handleWordPressPublish(contentItemId: string) {
   const credentials = getWordPressCredentials(site);
 
   // Resolve WP author ID from site_authors
+  let activeAuthorId = row.author_id;
   let wpAuthorId: number | undefined;
-  if (row.author_id) {
+  if (activeAuthorId) {
     const authorResult = await query<{ wp_author_id: number }>(
-      "select wp_author_id from site_authors where id = $1",
-      [row.author_id],
+      "select wp_author_id from site_authors where id = $1 and active = true",
+      [activeAuthorId],
     );
     wpAuthorId = authorResult.rows[0]?.wp_author_id;
   }
+  if (!wpAuthorId) {
+    activeAuthorId = await selectAuthorForSite(row.site_id);
+    if (activeAuthorId) {
+      const fallbackAuthor = await query<{ wp_author_id: number }>(
+        "select wp_author_id from site_authors where id = $1 and active = true",
+        [activeAuthorId],
+      );
+      wpAuthorId = fallbackAuthor.rows[0]?.wp_author_id;
+      if (wpAuthorId) {
+        await query("update content_items set author_id = $2 where id = $1", [contentItemId, activeAuthorId]);
+      }
+    }
+  }
 
   // Resolve WP category IDs from site_categories
+  let activeCategoryId = row.category_id;
   let wpCategoryIds: number[] | undefined;
-  if (row.category_id) {
+  if (activeCategoryId) {
     const catResult = await query<{ wp_category_id: number }>(
-      "select wp_category_id from site_categories where id = $1",
-      [row.category_id],
+      "select wp_category_id from site_categories where id = $1 and active = true",
+      [activeCategoryId],
     );
     if (catResult.rows[0]?.wp_category_id) {
       wpCategoryIds = [catResult.rows[0].wp_category_id];
+    }
+  }
+  if (!wpCategoryIds?.length) {
+    activeCategoryId = await selectActiveCategoryForSite(row.site_id);
+    if (activeCategoryId) {
+      const fallbackCategory = await query<{ wp_category_id: number }>(
+        "select wp_category_id from site_categories where id = $1 and active = true",
+        [activeCategoryId],
+      );
+      if (fallbackCategory.rows[0]?.wp_category_id) {
+        wpCategoryIds = [fallbackCategory.rows[0].wp_category_id];
+        await query("update content_items set category_id = $2 where id = $1", [contentItemId, activeCategoryId]);
+      }
     }
   }
 
@@ -2482,6 +2551,12 @@ async function handleWordPressPublish(contentItemId: string) {
 
   if (!credentials || site.setup_state !== "ready" || site.credentials_test_state !== "passed") {
     throw new Error("This site is not allowed to publish until setup is ready and WordPress credentials have passed testing.");
+  }
+  if (!wpAuthorId) {
+    throw new Error("No active WordPress author is selected for this site.");
+  }
+  if (!wpCategoryIds?.length) {
+    throw new Error("No active WordPress category is selected for this site.");
   }
 
   // Upload images to WordPress and collect media IDs
@@ -2604,9 +2679,11 @@ async function handleBackfillCreate(siteId?: string) {
           select s.id
           from sites s
           join site_setup su on su.site_id = s.id
+          join site_settings ss on ss.site_id = s.id
           where s.id = $1
             and coalesce(su.setup_state, 'needs_setup') = 'ready'
             and coalesce(su.credentials_test_state, 'untested') = 'passed'
+            and coalesce(ss.allow_blog, false) = true
         `,
         [siteId],
       )
@@ -2619,32 +2696,56 @@ async function handleBackfillCreate(siteId?: string) {
           where coalesce(su.setup_state, 'needs_setup') = 'ready'
             and coalesce(su.credentials_test_state, 'untested') = 'passed'
             and coalesce(ss.allow_blog, false) = true
+            and exists (
+              select 1
+              from site_authors sa
+              where sa.site_id = s.id
+                and sa.active = true
+                and sa.wp_author_id is not null
+            )
+            and exists (
+              select 1
+              from site_categories sc
+              where sc.site_id = s.id
+                and sc.active = true
+                and sc.wp_category_id is not null
+            )
         `,
       );
 
   let queued = 0;
   for (const site of targetSites.rows) {
-    const keywords = await query<{ id: string }>(
+    const keywords = await query<{ id: string; category_id: string }>(
       `
-        select id
-        from keyword_candidates
-        where site_id = $1 and used = false
-        order by created_at asc
+        select k.id, k.category_id
+        from keyword_candidates k
+        join site_categories sc on sc.id = k.category_id
+        where k.site_id = $1
+          and k.used = false
+          and k.category_id is not null
+          and sc.active = true
+        order by k.created_at asc
         limit 3
       `,
       [site.id],
     );
 
     for (const keyword of keywords.rows) {
+      const authorId = await selectAuthorForSite(site.id);
+      if (!authorId) {
+        continue;
+      }
+
       const insert = await query<{ id: string }>(
         `
-          insert into content_items (site_id, kind, stage, status, source_keyword_id, scheduled_for)
-          values ($1, 'blog', 'research', 'queued', $2, now() - interval '1 day')
+          insert into content_items (site_id, kind, stage, status, source_keyword_id, category_id, author_id, scheduled_for)
+          values ($1, 'blog', 'research', 'queued', $2, $3, $4, now() - interval '1 day')
           returning id
         `,
-        [site.id, keyword.id],
+        [site.id, keyword.id, keyword.category_id, authorId],
       );
       await query("update keyword_candidates set used = true where id = $1", [keyword.id]);
+      await query("update site_categories set usage_count = usage_count + 1 where id = $1", [keyword.category_id]);
       await enqueueJob("blog.seo_brief_generate", { contentItemId: insert.rows[0].id }, "content", insert.rows[0].id);
       queued += 1;
     }

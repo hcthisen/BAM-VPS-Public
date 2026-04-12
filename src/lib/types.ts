@@ -90,6 +90,29 @@ export type SiteDetailRecord = SiteRecord &
   publishReadyCount: number;
 };
 
+export type SiteAuthorRecord = {
+  id: string;
+  siteId: string;
+  wpAuthorId: number | null;
+  name: string;
+  slug: string | null;
+  email: string | null;
+  wordpressRole: string | null;
+  usageCount: number;
+  active: boolean;
+};
+
+export type SiteCategoryRecord = {
+  id: string;
+  siteId: string;
+  wpCategoryId: number | null;
+  name: string;
+  slug: string | null;
+  description: string | null;
+  usageCount: number;
+  active: boolean;
+};
+
 export type FeedRecord = {
   id: string;
   siteId: string;

@@ -6,6 +6,21 @@ export type WordPressCredentials = {
   applicationPassword: string;
 };
 
+export type WordPressUser = {
+  id: number;
+  name: string;
+  slug: string;
+  email?: string;
+  roles?: string[];
+};
+
+export type WordPressCategory = {
+  id: number;
+  name: string;
+  slug: string;
+  description?: string;
+};
+
 function buildHeaders(credentials: WordPressCredentials, contentType = "application/json") {
   const token = Buffer.from(`${credentials.username}:${credentials.applicationPassword}`).toString("base64");
   return {
@@ -14,9 +29,13 @@ function buildHeaders(credentials: WordPressCredentials, contentType = "applicat
   };
 }
 
-export async function wpGet<T>(credentials: WordPressCredentials, path: string): Promise<T> {
+async function wpFetch(credentials: WordPressCredentials, path: string, init?: RequestInit) {
   const response = await fetch(`${credentials.baseUrl.replace(/\/$/, "")}${path}`, {
-    headers: buildHeaders(credentials),
+    ...init,
+    headers: {
+      ...buildHeaders(credentials),
+      ...(init?.headers ?? {}),
+    },
     cache: "no-store",
   });
 
@@ -24,7 +43,35 @@ export async function wpGet<T>(credentials: WordPressCredentials, path: string):
     throw new Error(`WordPress GET ${path} failed with ${response.status}`);
   }
 
+  return response;
+}
+
+export async function wpGet<T>(credentials: WordPressCredentials, path: string): Promise<T> {
+  const response = await wpFetch(credentials, path);
+
   return (await response.json()) as T;
+}
+
+async function wpGetPaginated<T>(credentials: WordPressCredentials, path: string): Promise<T[]> {
+  const items: T[] = [];
+  let page = 1;
+
+  while (true) {
+    const separator = path.includes("?") ? "&" : "?";
+    const response = await wpFetch(credentials, `${path}${separator}per_page=100&page=${page}`);
+    const pageItems = (await response.json()) as T[];
+
+    items.push(...pageItems);
+
+    const totalPages = Number.parseInt(response.headers.get("x-wp-totalpages") ?? "1", 10);
+    if (!Number.isFinite(totalPages) || page >= totalPages || pageItems.length === 0) {
+      break;
+    }
+
+    page += 1;
+  }
+
+  return items;
 }
 
 export async function wpDelete<T>(credentials: WordPressCredentials, path: string): Promise<T> {
@@ -40,16 +87,68 @@ export async function wpDelete<T>(credentials: WordPressCredentials, path: strin
   return (await response.json()) as T;
 }
 
+function normalizeRoles(roles: string[] | undefined) {
+  return (roles ?? []).map((role) => role.trim().toLowerCase()).filter(Boolean);
+}
+
+export function getPreferredWordPressRole(roles: string[] | undefined) {
+  const normalizedRoles = normalizeRoles(roles);
+  const priorityOrder = ["administrator", "editor", "author"];
+
+  for (const role of priorityOrder) {
+    const match = normalizedRoles.find((candidate) => candidate === role || candidate.includes(role));
+    if (match) {
+      return match;
+    }
+  }
+
+  return normalizedRoles[0] ?? null;
+}
+
+export function isEligibleWordPressAuthor(user: Pick<WordPressUser, "roles">) {
+  const normalizedRoles = normalizeRoles(user.roles);
+  if (!normalizedRoles.length) {
+    return true;
+  }
+
+  return normalizedRoles.some(
+    (role) =>
+      role === "administrator" ||
+      role === "editor" ||
+      role === "author" ||
+      role.includes("administrator") ||
+      role.includes("editor") ||
+      role.includes("author") ||
+      role.includes("writer"),
+  );
+}
+
+export function formatWordPressRoleLabel(role: string | null | undefined) {
+  if (!role) {
+    return null;
+  }
+
+  return role
+    .replace(/[_-]+/g, " ")
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
 export async function listWpUsers(credentials: WordPressCredentials) {
-  return wpGet<Array<{ id: number; name: string; slug: string; email?: string }>>(credentials, "/wp-json/wp/v2/users");
+  return wpGetPaginated<WordPressUser>(
+    credentials,
+    "/wp-json/wp/v2/users?context=edit&_fields=id,name,slug,email,roles",
+  );
 }
 
 export async function getWpCurrentUser(credentials: WordPressCredentials) {
-  return wpGet<{ id: number; name: string; slug: string; email?: string }>(credentials, "/wp-json/wp/v2/users/me");
+  return wpGet<WordPressUser>(credentials, "/wp-json/wp/v2/users/me?context=edit&_fields=id,name,slug,email,roles");
 }
 
 export async function listWpCategories(credentials: WordPressCredentials) {
-  return wpGet<Array<{ id: number; name: string; slug: string; description?: string }>>(credentials, "/wp-json/wp/v2/categories");
+  return wpGetPaginated<WordPressCategory>(
+    credentials,
+    "/wp-json/wp/v2/categories?_fields=id,name,slug,description",
+  );
 }
 
 export async function createWpPost(

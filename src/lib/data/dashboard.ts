@@ -8,6 +8,8 @@ import type {
   FeedRecord,
   JobRecord,
   KeywordRecord,
+  SiteAuthorRecord,
+  SiteCategoryRecord,
   SiteDetailRecord,
   SiteRecord,
 } from "@/lib/types";
@@ -38,9 +40,10 @@ export async function getDashboardMetrics(): Promise<DashboardMetrics> {
     ),
     keyword_metrics as (
       select
-        count(*)::int as "keywordCount",
-        count(*) filter (where used = false)::int as "unusedKeywordCount"
-      from keyword_candidates
+        count(k.id) filter (where k.category_id is not null and coalesce(sc.active, false) = true)::int as "keywordCount",
+        count(k.id) filter (where k.used = false and k.category_id is not null and coalesce(sc.active, false) = true)::int as "unusedKeywordCount"
+      from keyword_candidates k
+      left join site_categories sc on sc.id = k.category_id
     ),
     content_metrics as (
       select
@@ -95,11 +98,12 @@ export async function listSites(): Promise<SiteRecord[]> {
     ),
     keyword_totals as (
       select
-        site_id,
-        count(*)::int as keyword_count,
-        count(*) filter (where used = false)::int as unused_keyword_count
-      from keyword_candidates
-      group by site_id
+        k.site_id,
+        count(k.id) filter (where k.category_id is not null and coalesce(sc.active, false) = true)::int as keyword_count,
+        count(k.id) filter (where k.used = false and k.category_id is not null and coalesce(sc.active, false) = true)::int as unused_keyword_count
+      from keyword_candidates k
+      left join site_categories sc on sc.id = k.category_id
+      group by k.site_id
     )
     select
       sites.id,
@@ -149,11 +153,12 @@ export async function getSiteDetail(siteId: string): Promise<SiteDetailRecord | 
       ),
       keyword_totals as (
         select
-          site_id,
-          count(*)::int as keyword_count,
-          count(*) filter (where used = false)::int as unused_keyword_count
-        from keyword_candidates
-        group by site_id
+          k.site_id,
+          count(k.id) filter (where k.category_id is not null and coalesce(sc.active, false) = true)::int as keyword_count,
+          count(k.id) filter (where k.used = false and k.category_id is not null and coalesce(sc.active, false) = true)::int as unused_keyword_count
+        from keyword_candidates k
+        left join site_categories sc on sc.id = k.category_id
+        group by k.site_id
       ),
       content_totals as (
         select
@@ -419,6 +424,51 @@ export async function listContent(limit = 250): Promise<ContentRecord[]> {
       limit $1
     `,
     [limit],
+  );
+
+  return result.rows;
+}
+
+export async function listSiteAuthors(siteId: string): Promise<SiteAuthorRecord[]> {
+  const result = await query<SiteAuthorRecord>(
+    `
+      select
+        id,
+        site_id as "siteId",
+        wp_author_id as "wpAuthorId",
+        name,
+        slug,
+        email,
+        wordpress_role as "wordpressRole",
+        usage_count as "usageCount",
+        active
+      from site_authors
+      where site_id = $1
+      order by active desc, usage_count asc, name asc
+    `,
+    [siteId],
+  );
+
+  return result.rows;
+}
+
+export async function listSiteCategories(siteId: string): Promise<SiteCategoryRecord[]> {
+  const result = await query<SiteCategoryRecord>(
+    `
+      select
+        id,
+        site_id as "siteId",
+        wp_category_id as "wpCategoryId",
+        name,
+        slug,
+        description,
+        usage_count as "usageCount",
+        active
+      from site_categories
+      where site_id = $1
+      order by active desc, usage_count asc, name asc
+    `,
+    [siteId],
   );
 
   return result.rows;

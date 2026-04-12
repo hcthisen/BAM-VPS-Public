@@ -11,11 +11,12 @@ import { query, withTransaction } from "@/lib/db";
 import { getEnv } from "@/lib/env";
 import { enqueueJob, type QueueName } from "@/lib/jobs";
 import { deleteAssets } from "@/lib/providers/storage";
-import { getWpCurrentUser, listWpCategories, type WordPressCredentials } from "@/lib/providers/wordpress";
+import { getWpCurrentUser, type WordPressCredentials } from "@/lib/providers/wordpress";
 import { getAppSetting, setAppSetting, upsertProviderAccount } from "@/lib/settings";
 import { getSiteWordPressCredentials, upsertSiteWordPressCredentials } from "@/lib/site-credentials";
 import { canInitiateSite, deriveSetupState, type CredentialTestState, type SiteSetupState, type SiteStepState } from "@/lib/sites/lifecycle";
 import { slugify } from "@/lib/services/slug";
+import { syncWordPressEntities } from "@/lib/services/wordpress-sync";
 
 function getRequiredText(formData: FormData, key: string) {
   return String(formData.get(key) ?? "").trim();
@@ -446,6 +447,8 @@ export async function saveSiteCredentialsAction(formData: FormData) {
           credentials_saved_at = excluded.credentials_saved_at,
           credentials_tested_at = excluded.credentials_tested_at,
           credentials_test_message = excluded.credentials_test_message,
+          wordpress_sync_state = 'blocked',
+          wordpress_sync_message = 'Run the WordPress connection test to reload authors and categories.',
           updated_at = now()
     `,
     [siteId, nextState, current.basics_state, current.wordpress_sync_state, current.profile_state, current.keyword_state],
@@ -509,12 +512,13 @@ export async function testSiteCredentialsAction(formData: FormData) {
   );
 
   try {
-    const [user, categories] = await Promise.all([getWpCurrentUser(credentials), listWpCategories(credentials)]);
+    const [user, syncResult] = await Promise.all([getWpCurrentUser(credentials), syncWordPressEntities(siteId, credentials)]);
     const nextState =
       current.ready_at || current.setup_state === "ready"
         ? "ready"
         : nextSetupStateForNonReadySite(current, {
             credentialsTestState: "passed",
+            wordpressSyncState: "passed",
           });
 
     await query(
@@ -523,11 +527,18 @@ export async function testSiteCredentialsAction(formData: FormData) {
         set credentials_test_state = 'passed',
             credentials_tested_at = now(),
             credentials_test_message = $2,
-            setup_state = $3,
+            wordpress_sync_state = 'passed',
+            wordpress_sync_message = $3,
+            setup_state = $4,
             updated_at = now()
         where site_id = $1
       `,
-      [siteId, `Connected as ${user.name}. ${categories.length} WordPress categories are reachable.`, nextState],
+      [
+        siteId,
+        `Connected as ${user.name}. Imported ${syncResult.authors} eligible authors and ${syncResult.categories} categories.`,
+        `${syncResult.activeAuthors} authors and ${syncResult.activeCategories} categories are currently selected.`,
+        nextState,
+      ],
     );
   } catch (error) {
     await query(
@@ -536,12 +547,53 @@ export async function testSiteCredentialsAction(formData: FormData) {
         set credentials_test_state = 'failed',
             credentials_tested_at = now(),
             credentials_test_message = $2,
+            wordpress_sync_state = 'blocked',
+            wordpress_sync_message = 'WordPress selections will reload after the connection test passes.',
             setup_state = $3,
             updated_at = now()
         where site_id = $1
       `,
       [siteId, error instanceof Error ? error.message : "WordPress connection test failed.", current.ready_at ? current.setup_state : "attention"],
     );
+  }
+
+  revalidateSiteViews(siteId);
+  redirect(getSitePath(siteId, returnTab) as never);
+}
+
+export async function saveSiteWordPressSelectionsAction(formData: FormData) {
+  await requireAdminSession();
+
+  const siteId = getRequiredText(formData, "siteId");
+  const returnTab = getSiteTab(formData);
+  const activeAuthorIds = Array.from(new Set(formData.getAll("activeAuthorIds").map((value) => String(value)).filter(Boolean)));
+  const activeCategoryIds = Array.from(new Set(formData.getAll("activeCategoryIds").map((value) => String(value)).filter(Boolean)));
+
+  await withTransaction(async (client) => {
+    await client.query(
+      `
+        update site_authors
+        set active = (id = any($2::uuid[])),
+            updated_at = now()
+        where site_id = $1
+      `,
+      [siteId, activeAuthorIds],
+    );
+
+    await client.query(
+      `
+        update site_categories
+        set active = (id = any($2::uuid[])),
+            updated_at = now()
+        where site_id = $1
+      `,
+      [siteId, activeCategoryIds],
+    );
+  });
+
+  const current = await loadSiteSetup(siteId);
+  if (current.setup_state === "ready") {
+    await enqueueJob("keywords.inventory_audit", { siteId }, "site", siteId);
   }
 
   revalidateSiteViews(siteId);
@@ -557,6 +609,17 @@ export async function initiateSiteAction(formData: FormData) {
 
   if (!canInitiateSite(current.setup_state, current.credentials_test_state)) {
     redirect(getSitePath(siteId, returnTab, "Complete site basics and pass the WordPress credential test before initiating the site.") as never);
+  }
+
+  const selected = await loadWordPressSelectionCounts(siteId);
+  if (selected.authorCount < 1 || selected.categoryCount < 1) {
+    redirect(
+      getSitePath(
+        siteId,
+        returnTab,
+        "Select at least one active WordPress author and one active category before initiating the site.",
+      ) as never,
+    );
   }
 
   await query(
@@ -760,6 +823,32 @@ export async function queueJobAction(formData: FormData) {
 
   revalidatePath("/");
   revalidatePath("/jobs");
+}
+
+async function loadWordPressSelectionCounts(siteId: string) {
+  const [authors, categories] = await Promise.all([
+    query<{ selected_count: number }>(
+      `
+        select count(*) filter (where active = true)::int as selected_count
+        from site_authors
+        where site_id = $1
+      `,
+      [siteId],
+    ),
+    query<{ selected_count: number }>(
+      `
+        select count(*) filter (where active = true)::int as selected_count
+        from site_categories
+        where site_id = $1
+      `,
+      [siteId],
+    ),
+  ]);
+
+  return {
+    authorCount: authors.rows[0]?.selected_count ?? 0,
+    categoryCount: categories.rows[0]?.selected_count ?? 0,
+  };
 }
 
 export async function runHeartbeatAction(formData: FormData) {
