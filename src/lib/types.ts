@@ -15,6 +15,7 @@ export type ContentStage =
   | "failed";
 export type ItemStatus = "queued" | "running" | "ready" | "published" | "failed";
 export type JobStatus = "queued" | "running" | "succeeded" | "failed";
+export type KeywordUsageFilter = "all" | "available" | "used";
 
 export type DashboardMetrics = {
   siteCount: number;

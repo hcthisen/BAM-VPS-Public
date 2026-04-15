@@ -6,6 +6,7 @@ import { PaginationNav } from "@/components/pagination-nav";
 import { Panel } from "@/components/panel";
 import { requireAdminSession } from "@/lib/auth/server";
 import { listKeywordsPage } from "@/lib/data/dashboard";
+import type { KeywordUsageFilter } from "@/lib/types";
 
 type KeywordsPageProps = {
   searchParams?: Promise<Record<string, string | string[] | undefined>>;
@@ -22,20 +23,28 @@ function parsePositiveInt(value: string | undefined, fallback: number) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function parseKeywordUsageFilter(value: string | undefined): KeywordUsageFilter {
+  return value === "available" || value === "used" ? value : "all";
+}
+
 export default async function KeywordsPage({ searchParams }: KeywordsPageProps) {
   await requireAdminSession();
 
   const params = searchParams ? await searchParams : {};
   const siteId = getSingleParam(params.siteId);
+  const errorParam = getSingleParam(params.error);
   const page = parsePositiveInt(getSingleParam(params.page), 1);
   const requestedPageSize = parsePositiveInt(getSingleParam(params.pageSize), 100);
   const pageSize = PAGE_SIZE_OPTIONS.includes(requestedPageSize as (typeof PAGE_SIZE_OPTIONS)[number]) ? requestedPageSize : 100;
   const selectedSiteId = siteId && siteId !== "all" ? siteId : null;
+  const keywordStatus = parseKeywordUsageFilter(getSingleParam(params.keywordStatus));
+  const errorMessage = errorParam ? decodeURIComponent(errorParam) : null;
 
   const keywordPage = await listKeywordsPage({
     page,
     pageSize,
     siteId: selectedSiteId,
+    status: keywordStatus,
   }).catch(() => ({
     keywords: [],
     currentPage: 1,
@@ -45,10 +54,30 @@ export default async function KeywordsPage({ searchParams }: KeywordsPageProps) 
     sites: [],
   }));
   const allSiteKeywordCount = keywordPage.sites.reduce((sum, site) => sum + site.keywordCount, 0);
+  const emptyTitle = selectedSiteId || keywordStatus !== "all" ? "No matching keywords" : "No keywords yet";
+  const emptyDescription =
+    selectedSiteId || keywordStatus !== "all"
+      ? "No keywords match the current site and status filters."
+      : "Keywords appear here after site initiation completes.";
+  const returnParams = new URLSearchParams();
+  if (selectedSiteId) {
+    returnParams.set("siteId", selectedSiteId);
+  }
+  if (keywordStatus !== "all") {
+    returnParams.set("keywordStatus", keywordStatus);
+  }
+  if (keywordPage.pageSize !== 100) {
+    returnParams.set("pageSize", String(keywordPage.pageSize));
+  }
+  if (keywordPage.currentPage > 1) {
+    returnParams.set("page", String(keywordPage.currentPage));
+  }
+  const returnTo = returnParams.size > 0 ? `/keywords?${returnParams.toString()}` : "/keywords";
 
   return (
     <div className="page">
       <Panel title="Keywords">
+        {errorMessage ? <p className="form-error" style={{ margin: "16px 20px 0" }}>{errorMessage}</p> : null}
         <div className="panel-body" style={{ paddingBottom: 0 }}>
           <form method="get" className="chip-row" style={{ alignItems: "end", justifyContent: "space-between" }}>
             <div className="field" style={{ minWidth: 220, maxWidth: 320 }}>
@@ -60,6 +89,15 @@ export default async function KeywordsPage({ searchParams }: KeywordsPageProps) 
                     {site.name} ({site.keywordCount})
                   </option>
                 ))}
+              </select>
+            </div>
+
+            <div className="field" style={{ width: 160 }}>
+              <label htmlFor="keywordStatus">Filter by status</label>
+              <select id="keywordStatus" name="keywordStatus" defaultValue={keywordStatus}>
+                <option value="all">All statuses</option>
+                <option value="available">Available</option>
+                <option value="used">Used</option>
               </select>
             </div>
 
@@ -82,7 +120,7 @@ export default async function KeywordsPage({ searchParams }: KeywordsPageProps) 
 
         {keywordPage.totalCount > 0 ? (
           <>
-            <KeywordTable keywords={keywordPage.keywords} showSiteColumn={!selectedSiteId} />
+            <KeywordTable keywords={keywordPage.keywords} showSiteColumn={!selectedSiteId} returnTo={returnTo} />
             <div className="panel-body" style={{ paddingTop: 12 }}>
               <PaginationNav
                 pathname="/keywords"
@@ -91,13 +129,14 @@ export default async function KeywordsPage({ searchParams }: KeywordsPageProps) 
                 totalCount={keywordPage.totalCount}
                 query={{
                   siteId: selectedSiteId ?? undefined,
+                  keywordStatus: keywordStatus !== "all" ? keywordStatus : undefined,
                   pageSize: keywordPage.pageSize,
                 }}
               />
             </div>
           </>
         ) : (
-          <EmptyState title="No keywords yet" description="Keywords appear here after site initiation completes." />
+          <EmptyState title={emptyTitle} description={emptyDescription} />
         )}
       </Panel>
     </div>

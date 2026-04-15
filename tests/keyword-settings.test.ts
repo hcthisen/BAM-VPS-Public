@@ -4,6 +4,7 @@ import {
   buildKeywordTargetSequence,
   DEFAULT_KEYWORD_MAX_DIFFICULTY,
   DEFAULT_KEYWORD_MIN_SEARCH_VOLUME,
+  deriveKeywordTargetFromMetrics,
   formatKeywordTarget,
   getKeywordSettingsWarning,
   getNextHigherKeywordDifficultyAllowance,
@@ -107,5 +108,30 @@ describe("keyword settings helpers", () => {
     ).toBe(false);
 
     expect(formatKeywordTarget({ maxDifficulty: 40, minSearchVolume: 100 })).toBe("difficulty <= 40, volume >= 100");
+  });
+
+  it("tightens a saved target from the final kept keyword inventory", () => {
+    expect(
+      deriveKeywordTargetFromMetrics(
+        [
+          { difficulty: 21, searchVolume: 1600 },
+          { difficulty: 30, searchVolume: 5400 },
+          { difficulty: 27, searchVolume: 2300 },
+        ],
+        { maxDifficulty: 30, minSearchVolume: 0 },
+      ),
+    ).toEqual({ maxDifficulty: 30, minSearchVolume: 1600 });
+  });
+
+  it("falls back when the kept inventory has no usable metrics", () => {
+    expect(
+      deriveKeywordTargetFromMetrics(
+        [
+          { difficulty: null, searchVolume: 1200 },
+          { difficulty: 20, searchVolume: null },
+        ],
+        { maxDifficulty: 40, minSearchVolume: 100 },
+      ),
+    ).toEqual({ maxDifficulty: 40, minSearchVolume: 100 });
   });
 });

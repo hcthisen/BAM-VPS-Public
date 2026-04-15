@@ -19,6 +19,7 @@ import {
   testSiteCredentialsAction,
 } from "@/app/actions";
 import { EmptyState } from "@/components/empty-state";
+import { KeywordTable } from "@/components/keyword-table";
 import { Panel } from "@/components/panel";
 import { PaginationNav } from "@/components/pagination-nav";
 import { StatusBadge } from "@/components/status-badge";
@@ -28,7 +29,7 @@ import { getSiteDetail, listSiteAuthors, listSiteCategories, listSiteContent, li
 import { query } from "@/lib/db";
 import { getKeywordSettingsWarning } from "@/lib/keywords/settings";
 import { formatWordPressRoleLabel } from "@/lib/providers/wordpress";
-import type { ContentRecord, FeedRecord, JobRecord, KeywordRecord, SiteAuthorRecord, SiteCategoryRecord, SiteDetailRecord } from "@/lib/types";
+import type { ContentRecord, FeedRecord, JobRecord, KeywordUsageFilter, SiteAuthorRecord, SiteCategoryRecord, SiteDetailRecord } from "@/lib/types";
 
 const tabs = ["setup", "profile", "automation", "feeds", "keywords", "content", "activity"] as const;
 type SiteTab = (typeof tabs)[number];
@@ -49,6 +50,10 @@ function getSingleParam(value: string | string[] | undefined) {
 function parsePositiveInt(value: string | undefined, fallback: number) {
   const parsed = Number.parseInt(value ?? "", 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function parseKeywordUsageFilter(value: string | undefined): KeywordUsageFilter {
+  return value === "available" || value === "used" ? value : "all";
 }
 
 function formatDate(value: string | null | undefined) {
@@ -567,51 +572,27 @@ function renderFeedsTab(site: SiteDetailRecord, feeds: FeedRecord[]) {
   );
 }
 
-function renderKeywordsTable(keywords: KeywordRecord[]) {
-  if (!keywords.length) {
-    return <EmptyState title="No keywords yet" description="Keywords appear here after site initiation completes the keyword research phase." />;
-  }
-
-  return (
-    <div className="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>Keyword</th>
-            <th>Cluster</th>
-            <th>Category</th>
-            <th>Volume</th>
-            <th>Difficulty</th>
-            <th>Status</th>
-          </tr>
-        </thead>
-        <tbody>
-          {keywords.map((keyword) => (
-            <tr key={keyword.id}>
-              <td>{keyword.keyword}</td>
-              <td>{keyword.clusterLabel ?? "-"}</td>
-              <td>{keyword.categoryName ?? "-"}</td>
-              <td>{keyword.searchVolume ?? "-"}</td>
-              <td>{keyword.difficulty ?? "-"}</td>
-              <td>
-                <StatusBadge value={keyword.used ? "used" : "available"} />
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
 function renderKeywordsTab(
   site: SiteDetailRecord,
   keywordPage: Awaited<ReturnType<typeof listSiteKeywordsPage>>,
+  keywordStatus: KeywordUsageFilter,
 ) {
   const keywordWarning = getKeywordSettingsWarning({
     maxDifficulty: site.keywordMaxDifficulty,
     minSearchVolume: site.keywordMinSearchVolume,
   });
+  const keywordReturnParams = new URLSearchParams({ tab: "keywords" });
+  if (keywordStatus !== "all") {
+    keywordReturnParams.set("keywordStatus", keywordStatus);
+  }
+  if (keywordPage.currentPage > 1) {
+    keywordReturnParams.set("keywordPage", String(keywordPage.currentPage));
+  }
+  const returnTo = `/sites/${site.id}?${keywordReturnParams.toString()}`;
+  const emptyMessage =
+    keywordStatus === "all"
+      ? "Keywords appear here after site initiation completes the keyword research phase."
+      : "No keywords match the current status filter.";
 
   return (
     <>
@@ -659,7 +640,28 @@ function renderKeywordsTab(
       </Panel>
 
       <Panel title="Keywords">
-        {renderKeywordsTable(keywordPage.keywords)}
+        <div className="panel-body" style={{ paddingBottom: 0 }}>
+          <form method="get" className="chip-row" style={{ alignItems: "end", justifyContent: "space-between" }}>
+            <input type="hidden" name="tab" value="keywords" />
+            <div className="field" style={{ width: 180 }}>
+              <label htmlFor="keywordStatus">Filter by status</label>
+              <select id="keywordStatus" name="keywordStatus" defaultValue={keywordStatus}>
+                <option value="all">All statuses</option>
+                <option value="available">Available</option>
+                <option value="used">Used</option>
+              </select>
+            </div>
+            <button className="button secondary" type="submit">
+              Apply
+            </button>
+          </form>
+        </div>
+        <KeywordTable
+          keywords={keywordPage.keywords}
+          showSiteColumn={false}
+          returnTo={returnTo}
+          emptyMessage={emptyMessage}
+        />
         <div className="panel-body" style={{ paddingTop: 12 }}>
           <PaginationNav
             pathname={`/sites/${site.id}`}
@@ -667,7 +669,10 @@ function renderKeywordsTab(
             pageSize={keywordPage.pageSize}
             totalCount={keywordPage.totalCount}
             pageParamName="keywordPage"
-            query={{ tab: "keywords" }}
+            query={{
+              tab: "keywords",
+              keywordStatus: keywordStatus !== "all" ? keywordStatus : undefined,
+            }}
           />
         </div>
       </Panel>
@@ -786,6 +791,7 @@ export default async function SiteDetailPage({ params, searchParams }: SiteDetai
   const errorParam = getSingleParam(resolvedSearch?.error);
   const errorMessage = errorParam ? decodeURIComponent(errorParam) : null;
   const keywordPageNumber = parsePositiveInt(getSingleParam(resolvedSearch?.keywordPage), 1);
+  const keywordStatus = parseKeywordUsageFilter(getSingleParam(resolvedSearch?.keywordStatus));
 
   const [site, languages, locations, authors, categories, feeds, keywordPage, content, jobs] = await Promise.all([
     getSiteDetail(siteId),
@@ -794,7 +800,11 @@ export default async function SiteDetailPage({ params, searchParams }: SiteDetai
     listSiteAuthors(siteId).catch(() => []),
     listSiteCategories(siteId).catch(() => []),
     listSiteFeeds(siteId).catch(() => []),
-    listSiteKeywordsPage(siteId, { page: keywordPageNumber, pageSize: 100 }).catch(() => ({
+    listSiteKeywordsPage(siteId, {
+      page: keywordPageNumber,
+      pageSize: 100,
+      status: keywordStatus,
+    }).catch(() => ({
       keywords: [],
       currentPage: 1,
       pageSize: 100,
@@ -849,7 +859,7 @@ export default async function SiteDetailPage({ params, searchParams }: SiteDetai
       {currentTab === "profile" ? renderProfileTab(site) : null}
       {currentTab === "automation" ? renderAutomationTab(site) : null}
       {currentTab === "feeds" ? renderFeedsTab(site, feeds) : null}
-      {currentTab === "keywords" ? renderKeywordsTab(site, keywordPage) : null}
+      {currentTab === "keywords" ? renderKeywordsTab(site, keywordPage, keywordStatus) : null}
       {currentTab === "content" ? (
         <Panel title="Content Pipeline">
           {renderContentTable(content)}

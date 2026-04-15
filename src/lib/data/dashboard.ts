@@ -8,6 +8,7 @@ import type {
   FeedRecord,
   JobRecord,
   KeywordRecord,
+  KeywordUsageFilter,
   SiteAuthorRecord,
   SiteCategoryRecord,
   SiteDetailRecord,
@@ -35,6 +36,10 @@ function clampPositiveInt(value: number, fallback: number) {
   }
 
   return Math.floor(value);
+}
+
+function normalizeKeywordUsageFilter(value: KeywordUsageFilter | null | undefined): KeywordUsageFilter {
+  return value === "available" || value === "used" ? value : "all";
 }
 
 export async function getDashboardMetrics(): Promise<DashboardMetrics> {
@@ -308,13 +313,24 @@ export async function listSiteKeywordsPage(
   options: {
     page?: number;
     pageSize?: number;
+    status?: KeywordUsageFilter | null;
   } = {},
 ): Promise<Omit<KeywordListPageResult, "sites">> {
   const pageSize = Math.min(clampPositiveInt(options.pageSize ?? 100, 100), 250);
   const requestedPage = clampPositiveInt(options.page ?? 1, 1);
+  const status = normalizeKeywordUsageFilter(options.status);
   const countResult = await query<{ total_count: number }>(
-    "select count(*)::int as total_count from keyword_candidates where site_id = $1",
-    [siteId],
+    `
+      select count(*)::int as total_count
+      from keyword_candidates
+      where site_id = $1
+        and (
+          $2::text = 'all'
+          or ($2::text = 'available' and used = false)
+          or ($2::text = 'used' and used = true)
+        )
+    `,
+    [siteId, status],
   );
   const totalCount = countResult.rows[0]?.total_count ?? 0;
   const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
@@ -338,11 +354,16 @@ export async function listSiteKeywordsPage(
       join sites s on s.id = k.site_id
       left join site_categories c on c.id = k.category_id
       where k.site_id = $1
+        and (
+          $4::text = 'all'
+          or ($4::text = 'available' and k.used = false)
+          or ($4::text = 'used' and k.used = true)
+        )
       order by k.updated_at desc
       limit $2
       offset $3
     `,
-    [siteId, pageSize, offset],
+    [siteId, pageSize, offset, status],
   );
 
   return {
@@ -439,11 +460,13 @@ export async function listKeywordsPage(
     page?: number;
     pageSize?: number;
     siteId?: string | null;
+    status?: KeywordUsageFilter | null;
   } = {},
 ): Promise<KeywordListPageResult> {
   const pageSize = Math.min(clampPositiveInt(options.pageSize ?? 100, 100), 250);
   const requestedPage = clampPositiveInt(options.page ?? 1, 1);
   const siteId = options.siteId ?? null;
+  const status = normalizeKeywordUsageFilter(options.status);
 
   const [countResult, siteCountsResult] = await Promise.all([
     query<{ total_count: number }>(
@@ -451,8 +474,13 @@ export async function listKeywordsPage(
         select count(*)::int as total_count
         from keyword_candidates
         where ($1::uuid is null or site_id = $1::uuid)
+          and (
+            $2::text = 'all'
+            or ($2::text = 'available' and used = false)
+            or ($2::text = 'used' and used = true)
+          )
       `,
-      [siteId],
+      [siteId, status],
     ),
     query<KeywordSiteCountRecord>(
       `
@@ -461,11 +489,18 @@ export async function listKeywordsPage(
           s.name,
           count(k.id)::int as "keywordCount"
         from sites s
-        left join keyword_candidates k on k.site_id = s.id
+        left join keyword_candidates k
+          on k.site_id = s.id
+         and (
+           $1::text = 'all'
+           or ($1::text = 'available' and k.used = false)
+           or ($1::text = 'used' and k.used = true)
+         )
         group by s.id, s.name
         having count(k.id) > 0
         order by s.name asc
       `,
+      [status],
     ),
   ]);
 
@@ -491,11 +526,16 @@ export async function listKeywordsPage(
       join sites s on s.id = k.site_id
       left join site_categories c on c.id = k.category_id
       where ($2::uuid is null or k.site_id = $2::uuid)
+        and (
+          $4::text = 'all'
+          or ($4::text = 'available' and k.used = false)
+          or ($4::text = 'used' and k.used = true)
+        )
       order by k.updated_at desc
       limit $1
       offset $3
     `,
-    [pageSize, siteId, offset],
+    [pageSize, siteId, offset, status],
   );
 
   return {

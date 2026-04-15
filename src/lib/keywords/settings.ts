@@ -9,6 +9,11 @@ export type KeywordTarget = {
   minSearchVolume: number;
 };
 
+type KeywordMetric = {
+  difficulty: number | null;
+  searchVolume: number | null;
+};
+
 export function normalizeKeywordMaxDifficulty(
   value: unknown,
   fallback = DEFAULT_KEYWORD_MAX_DIFFICULTY,
@@ -139,4 +144,27 @@ export function keywordMatchesTarget(
 export function formatKeywordTarget(target: KeywordTarget) {
   const normalized = normalizeKeywordTarget(target);
   return `difficulty <= ${normalized.maxDifficulty}, volume >= ${normalized.minSearchVolume}`;
+}
+
+export function deriveKeywordTargetFromMetrics(
+  keywords: KeywordMetric[],
+  fallback: Partial<KeywordTarget> | null | undefined,
+) {
+  const normalizedFallback = normalizeKeywordTarget(fallback);
+  const qualifyingKeywords = keywords.filter(
+    (keyword) =>
+      keyword.searchVolume !== null &&
+      keyword.difficulty !== null &&
+      Number.isFinite(keyword.searchVolume) &&
+      Number.isFinite(keyword.difficulty),
+  );
+
+  if (qualifyingKeywords.length === 0) {
+    return normalizedFallback;
+  }
+
+  return normalizeKeywordTarget({
+    maxDifficulty: Math.max(...qualifyingKeywords.map((keyword) => keyword.difficulty ?? 0)),
+    minSearchVolume: Math.min(...qualifyingKeywords.map((keyword) => keyword.searchVolume ?? 0)),
+  });
 }

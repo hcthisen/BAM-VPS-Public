@@ -99,6 +99,33 @@ function getSitePath(siteId: string, tab: SiteTab, error?: string) {
   return `/sites/${siteId}?${params.toString()}`;
 }
 
+function getReturnToPath(formData: FormData, fallback: string) {
+  const returnTo = getOptionalText(formData, "returnTo");
+  if (!returnTo || !returnTo.startsWith("/")) {
+    return fallback;
+  }
+
+  return returnTo;
+}
+
+function buildReturnPathWithError(returnTo: string, message: string) {
+  const url = new URL(returnTo, "http://localhost");
+  url.searchParams.set("error", message);
+  return `${url.pathname}${url.search}`;
+}
+
+function revalidateKeywordViews(siteIds: string[]) {
+  const uniqueSiteIds = Array.from(new Set(siteIds.filter(Boolean)));
+
+  revalidatePath("/");
+  revalidatePath("/sites");
+  revalidatePath("/keywords");
+
+  for (const siteId of uniqueSiteIds) {
+    revalidateSiteViews(siteId);
+  }
+}
+
 async function loadSiteSetup(siteId: string): Promise<SiteSetupRow> {
   const result = await query<SiteSetupRow>(
     `
@@ -778,6 +805,67 @@ export async function saveSiteKeywordSettingsAction(formData: FormData) {
 
   revalidateSiteViews(siteId);
   redirect(getSitePath(siteId, returnTab) as never);
+}
+
+export async function deleteKeywordAction(formData: FormData) {
+  await requireAdminSession();
+
+  const keywordId = getRequiredText(formData, "keywordId");
+  const returnTo = getReturnToPath(formData, "/keywords");
+
+  if (!keywordId) {
+    redirect(buildReturnPathWithError(returnTo, "Choose a keyword to delete.") as never);
+  }
+
+  const deleted = await query<{ site_id: string }>(
+    `
+      delete from keyword_candidates
+      where id = $1
+      returning site_id
+    `,
+    [keywordId],
+  );
+
+  if (!deleted.rows[0]) {
+    redirect(buildReturnPathWithError(returnTo, "Keyword not found.") as never);
+  }
+
+  revalidateKeywordViews([deleted.rows[0].site_id]);
+  redirect(returnTo as never);
+}
+
+export async function bulkDeleteKeywordsAction(formData: FormData) {
+  await requireAdminSession();
+
+  const returnTo = getReturnToPath(formData, "/keywords");
+  const keywordIds = Array.from(
+    new Set(
+      formData
+        .getAll("keywordIds")
+        .map((value) => String(value).trim())
+        .filter(Boolean),
+    ),
+  );
+
+  if (keywordIds.length === 0) {
+    redirect(buildReturnPathWithError(returnTo, "Select at least one keyword to delete.") as never);
+  }
+
+  const deleted = await query<{ site_id: string }>(
+    `
+      delete from keyword_candidates
+      where id = any($1::uuid[])
+      returning site_id
+    `,
+    [keywordIds],
+  );
+
+  if (deleted.rows.length === 0) {
+    redirect(buildReturnPathWithError(returnTo, "No matching keywords were deleted.") as never);
+  }
+
+  revalidateKeywordViews(deleted.rows.map((row) => row.site_id));
+  redirect(returnTo as never);
 }
 
 export async function createFeedSubscriptionAction(formData: FormData) {

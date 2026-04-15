@@ -5,6 +5,7 @@ import { enforceFinalWordsBeforeFaq, isFaqHeading, orderFinalWordsBeforeFaq } fr
 import { DEFAULT_IMAGE_DENSITY_PCT, normalizeImageDensityPct, selectHeadingsForImageDensity } from "@/lib/content/image-density";
 import {
   buildKeywordTargetSequence,
+  deriveKeywordTargetFromMetrics,
   formatKeywordTarget,
   normalizeKeywordTarget,
   type KeywordTarget,
@@ -513,6 +514,7 @@ type KeywordResearchRunResult = {
   requiredCount: number;
   startingTarget: KeywordTarget;
   effectiveTarget: KeywordTarget;
+  savedTarget: KeywordTarget;
   researchRunId: string;
 };
 
@@ -632,6 +634,28 @@ async function countQualifyingKeywordsForRun(siteId: string, researchRunId: stri
   return result.rows[0]?.qualifying_count ?? 0;
 }
 
+async function getSavedKeywordTargetFromInventory(siteId: string, fallbackTarget: KeywordTarget) {
+  const result = await query<{
+    difficulty: number | null;
+    searchVolume: number | null;
+  }>(
+    `
+      select
+        k.difficulty,
+        k.search_volume as "searchVolume"
+      from keyword_candidates k
+      left join site_categories sc on sc.id = k.category_id
+      where k.site_id = $1
+        and coalesce(k.used, false) = false
+        and k.category_id is not null
+        and coalesce(sc.active, false) = true
+    `,
+    [siteId],
+  );
+
+  return deriveKeywordTargetFromMetrics(result.rows, fallbackTarget);
+}
+
 async function runAdaptiveKeywordResearch(siteId: string, requiredCount: number): Promise<KeywordResearchRunResult> {
   const site = await getSiteContext(siteId);
   if (!site) {
@@ -683,7 +707,7 @@ async function runAdaptiveKeywordResearch(siteId: string, requiredCount: number)
               updated_at = now()
           where site_id = $1
         `,
-        [siteId, target.maxDifficulty, target.minSearchVolume],
+        [siteId, persisted.savedTarget.maxDifficulty, persisted.savedTarget.minSearchVolume],
       );
 
       return {
@@ -694,6 +718,7 @@ async function runAdaptiveKeywordResearch(siteId: string, requiredCount: number)
         requiredCount: normalizedRequiredCount,
         startingTarget,
         effectiveTarget: target,
+        savedTarget: persisted.savedTarget,
         researchRunId,
       };
     }
@@ -937,6 +962,7 @@ Return JSON with:
       keywordMessage =
         `Initial keyword inventory ready with ${finalInventoryCount} unused keywords. ` +
         `Started at ${formatKeywordTarget(keywordResearch.startingTarget)} and settled on ${formatKeywordTarget(keywordResearch.effectiveTarget)} ` +
+        `before saving the next baseline at ${formatKeywordTarget(keywordResearch.savedTarget)} ` +
         `after ${keywordResearch.attemptCount} attempt${keywordResearch.attemptCount === 1 ? "" : "s"}, ` +
         `producing ${keywordResearch.qualifyingCount} qualifying keywords (${keywordResearch.insertedCount} inserted this run).`;
     }
@@ -1502,6 +1528,7 @@ async function handleKeywordsPersist(siteId: string, options: KeywordPersistOpti
   if (options.researchRunId) {
     qualifyingCount = await countQualifyingKeywordsForRun(siteId, options.researchRunId, effectiveTarget);
   }
+  const savedTarget = await getSavedKeywordTargetFromInventory(siteId, effectiveTarget);
 
   return {
     siteId,
@@ -1509,6 +1536,7 @@ async function handleKeywordsPersist(siteId: string, options: KeywordPersistOpti
     finalCount,
     qualifyingCount,
     effectiveTarget,
+    savedTarget,
     clusterDistribution: clusterDistribution.rows,
     difficultyDistribution: difficultyDistribution.rows,
     healthy: finalCount >= site.posts_per_day * 3,
