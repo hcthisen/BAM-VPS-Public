@@ -64,6 +64,8 @@ export type SiteRecord = {
   postsPerDay: number;
   newsPerDay: number;
   imageDensityPct: number;
+  keywordMaxDifficulty: number;
+  keywordMinSearchVolume: number;
   allowBlog: boolean;
   allowNews: boolean;
   autoPost: boolean;

@@ -12,6 +12,12 @@ import { DEFAULT_IMAGE_DENSITY_PCT, normalizeImageDensityPct } from "@/lib/conte
 import { query, withTransaction } from "@/lib/db";
 import { getEnv } from "@/lib/env";
 import { enqueueJob, type QueueName } from "@/lib/jobs";
+import {
+  DEFAULT_KEYWORD_MAX_DIFFICULTY,
+  DEFAULT_KEYWORD_MIN_SEARCH_VOLUME,
+  normalizeKeywordMaxDifficulty,
+  normalizeKeywordMinSearchVolume,
+} from "@/lib/keywords/settings";
 import { deleteAssets } from "@/lib/providers/storage";
 import { getWpCurrentUser, type WordPressCredentials } from "@/lib/providers/wordpress";
 import { getAppSetting, setAppSetting, upsertProviderAccount } from "@/lib/settings";
@@ -229,11 +235,25 @@ export async function createSiteAction(formData: FormData) {
 
   await query(
     `
-      insert into site_settings (site_id, allow_blog, allow_news, auto_post, wordpress_post_status, image_density_pct)
-      values ($1, false, false, false, 'publish', $2)
+      insert into site_settings (
+        site_id,
+        allow_blog,
+        allow_news,
+        auto_post,
+        wordpress_post_status,
+        image_density_pct,
+        keyword_max_difficulty,
+        keyword_min_search_volume
+      )
+      values ($1, false, false, false, 'publish', $2, $3, $4)
       on conflict (site_id) do nothing
     `,
-    [result.rows[0].id, DEFAULT_IMAGE_DENSITY_PCT],
+    [
+      result.rows[0].id,
+      DEFAULT_IMAGE_DENSITY_PCT,
+      DEFAULT_KEYWORD_MAX_DIFFICULTY,
+      DEFAULT_KEYWORD_MIN_SEARCH_VOLUME,
+    ],
   );
 
   await query(
@@ -386,13 +406,27 @@ export async function saveSiteBasicsAction(formData: FormData) {
 
   await query(
     `
-      insert into site_settings (site_id, allow_blog, allow_news, auto_post, wordpress_post_status, image_density_pct)
-      values ($1, false, false, false, 'publish', $2)
+      insert into site_settings (
+        site_id,
+        allow_blog,
+        allow_news,
+        auto_post,
+        wordpress_post_status,
+        image_density_pct,
+        keyword_max_difficulty,
+        keyword_min_search_volume
+      )
+      values ($1, false, false, false, 'publish', $2, $3, $4)
       on conflict (site_id) do update
       set image_density_pct = excluded.image_density_pct,
           updated_at = now()
     `,
-    [siteId, imageDensityPct],
+    [
+      siteId,
+      imageDensityPct,
+      DEFAULT_KEYWORD_MAX_DIFFICULTY,
+      DEFAULT_KEYWORD_MIN_SEARCH_VOLUME,
+    ],
   );
 
   const current = await loadSiteSetup(siteId);
@@ -696,6 +730,50 @@ export async function saveSiteAutomationAction(formData: FormData) {
       where site_id = $1
     `,
     [siteId, nextAllowBlog, nextAllowNews, autoPost, wordpressPostStatus],
+  );
+
+  revalidateSiteViews(siteId);
+  redirect(getSitePath(siteId, returnTab) as never);
+}
+
+export async function saveSiteKeywordSettingsAction(formData: FormData) {
+  await requireAdminSession();
+
+  const siteId = getRequiredText(formData, "siteId");
+  const returnTab = getSiteTab(formData);
+  const keywordMaxDifficulty = normalizeKeywordMaxDifficulty(
+    formData.get("keywordMaxDifficulty"),
+    DEFAULT_KEYWORD_MAX_DIFFICULTY,
+  );
+  const keywordMinSearchVolume = normalizeKeywordMinSearchVolume(
+    formData.get("keywordMinSearchVolume"),
+    DEFAULT_KEYWORD_MIN_SEARCH_VOLUME,
+  );
+
+  await query(
+    `
+      insert into site_settings (
+        site_id,
+        allow_blog,
+        allow_news,
+        auto_post,
+        wordpress_post_status,
+        image_density_pct,
+        keyword_max_difficulty,
+        keyword_min_search_volume
+      )
+      values ($1, false, false, false, 'publish', $2, $3, $4)
+      on conflict (site_id) do update
+      set keyword_max_difficulty = excluded.keyword_max_difficulty,
+          keyword_min_search_volume = excluded.keyword_min_search_volume,
+          updated_at = now()
+    `,
+    [
+      siteId,
+      DEFAULT_IMAGE_DENSITY_PCT,
+      keywordMaxDifficulty,
+      keywordMinSearchVolume,
+    ],
   );
 
   revalidateSiteViews(siteId);

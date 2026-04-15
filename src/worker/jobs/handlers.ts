@@ -3,6 +3,12 @@ import { randomUUID } from "node:crypto";
 import { marked } from "marked";
 import { enforceFinalWordsBeforeFaq, isFaqHeading, orderFinalWordsBeforeFaq } from "@/lib/content/article-structure";
 import { DEFAULT_IMAGE_DENSITY_PCT, normalizeImageDensityPct, selectHeadingsForImageDensity } from "@/lib/content/image-density";
+import {
+  buildKeywordTargetSequence,
+  formatKeywordTarget,
+  normalizeKeywordTarget,
+  type KeywordTarget,
+} from "@/lib/keywords/settings";
 import { insertArticleImages, type ArticleImage } from "@/lib/content/images";
 import { selectKeywordCandidatesForSlots, type KeywordSelectionCandidate } from "@/lib/content/keyword-rotation";
 import { query, withTransaction } from "@/lib/db";
@@ -63,6 +69,8 @@ type SiteContext = {
   setup_state: SiteSetupState;
   credentials_test_state: CredentialTestState;
   image_density_pct: number;
+  keyword_max_difficulty: number;
+  keyword_min_search_volume: number;
   wordpress_username: string | null;
   wordpress_application_password: string | null;
   secrets_encrypted: string | null;
@@ -85,6 +93,8 @@ async function getSiteContext(siteId: string): Promise<SiteContext | null> {
         coalesce(su.setup_state, 'needs_setup') as setup_state,
         coalesce(su.credentials_test_state, 'untested') as credentials_test_state,
         coalesce(ss.image_density_pct, 100) as image_density_pct,
+        coalesce(ss.keyword_max_difficulty, 40) as keyword_max_difficulty,
+        coalesce(ss.keyword_min_search_volume, 100) as keyword_min_search_volume,
         sc.wordpress_username,
         sc.wordpress_application_password,
         sc.secrets_encrypted
@@ -487,6 +497,23 @@ type CategoryOption = {
 
 type KeywordPipelineOptions = {
   enqueueNext?: boolean;
+  researchRunId?: string;
+};
+
+type KeywordPersistOptions = {
+  effectiveTarget?: KeywordTarget;
+  researchRunId?: string;
+};
+
+type KeywordResearchRunResult = {
+  finalInventoryCount: number;
+  insertedCount: number;
+  attemptCount: number;
+  qualifyingCount: number;
+  requiredCount: number;
+  startingTarget: KeywordTarget;
+  effectiveTarget: KeywordTarget;
+  researchRunId: string;
 };
 
 function normalizeCategoryText(value: string | null | undefined) {
@@ -573,6 +600,108 @@ function resolveKeywordCategoryId(
   }
 
   return existingCategoryId ?? categories[0]?.id ?? null;
+}
+
+function getSiteKeywordTarget(site: SiteContext): KeywordTarget {
+  return normalizeKeywordTarget({
+    maxDifficulty: site.keyword_max_difficulty,
+    minSearchVolume: site.keyword_min_search_volume,
+  });
+}
+
+async function countQualifyingKeywordsForRun(siteId: string, researchRunId: string, target: KeywordTarget) {
+  const normalizedTarget = normalizeKeywordTarget(target);
+  const result = await query<{ qualifying_count: number }>(
+    `
+      select count(*)::int as qualifying_count
+      from keyword_candidates k
+      left join site_categories sc on sc.id = k.category_id
+      where k.site_id = $1
+        and coalesce(k.used, false) = false
+        and k.category_id is not null
+        and coalesce(sc.active, false) = true
+        and coalesce(k.metadata_json->>'researchRunId', '') = $2
+        and k.search_volume is not null
+        and k.difficulty is not null
+        and k.search_volume >= $3
+        and k.difficulty <= $4
+    `,
+    [siteId, researchRunId, normalizedTarget.minSearchVolume, normalizedTarget.maxDifficulty],
+  );
+
+  return result.rows[0]?.qualifying_count ?? 0;
+}
+
+async function runAdaptiveKeywordResearch(siteId: string, requiredCount: number): Promise<KeywordResearchRunResult> {
+  const site = await getSiteContext(siteId);
+  if (!site) {
+    throw new Error(`Site ${siteId} not found`);
+  }
+
+  const normalizedRequiredCount = Math.max(1, Math.floor(requiredCount));
+  const startingTarget = getSiteKeywordTarget(site);
+  const targetSequence = buildKeywordTargetSequence(startingTarget);
+  const researchRunId = randomUUID();
+  let insertedCount = 0;
+  let qualifyingCount = 0;
+  let effectiveTarget = startingTarget;
+
+  for (const target of targetSequence) {
+    effectiveTarget = target;
+    const remainingCount = Math.max(normalizedRequiredCount - qualifyingCount, 1);
+    const batchSize = Math.min(Math.max(remainingCount, 8), 25);
+
+    const generated = await handleKeywordSeedGenerate(siteId, batchSize, {
+      enqueueNext: false,
+      researchRunId,
+    });
+    insertedCount += generated.inserted;
+
+    const expanded = await handleKeywordsExpand(siteId, {
+      enqueueNext: false,
+      researchRunId,
+    });
+    insertedCount += expanded.expanded;
+
+    await handleKeywordsClusterReview(siteId, {
+      enqueueNext: false,
+      researchRunId,
+    });
+
+    qualifyingCount = await countQualifyingKeywordsForRun(siteId, researchRunId, target);
+    if (qualifyingCount >= normalizedRequiredCount) {
+      const persisted = await handleKeywordsPersist(siteId, {
+        effectiveTarget: target,
+        researchRunId,
+      });
+
+      await query(
+        `
+          update site_settings
+          set keyword_max_difficulty = $2,
+              keyword_min_search_volume = $3,
+              updated_at = now()
+          where site_id = $1
+        `,
+        [siteId, target.maxDifficulty, target.minSearchVolume],
+      );
+
+      return {
+        finalInventoryCount: persisted.finalCount,
+        insertedCount,
+        attemptCount: targetSequence.indexOf(target) + 1,
+        qualifyingCount: persisted.qualifyingCount,
+        requiredCount: normalizedRequiredCount,
+        startingTarget,
+        effectiveTarget: target,
+        researchRunId,
+      };
+    }
+  }
+
+  throw new Error(
+    `Keyword research found ${qualifyingCount} qualifying keywords out of ${normalizedRequiredCount}. Started at ${formatKeywordTarget(startingTarget)} and ended at ${formatKeywordTarget(effectiveTarget)}.`,
+  );
 }
 
 async function handleSiteInitiate(siteId: string) {
@@ -797,22 +926,23 @@ Return JSON with:
   const targetKeywordCount = Math.max(site.posts_per_day * 30, 5);
 
   try {
-    let availableCount = await countUnusedKeywords(siteId);
-    let totalInserted = 0;
-
-    for (let attempt = 0; attempt < 2 && availableCount < targetKeywordCount; attempt += 1) {
-      const generated = await handleKeywordSeedGenerate(siteId, targetKeywordCount - availableCount, { enqueueNext: false });
-      totalInserted += generated.inserted;
-
-      await handleKeywordsExpand(siteId, { enqueueNext: false });
-      await handleKeywordsClusterReview(siteId, { enqueueNext: false });
-
-      const persisted = await handleKeywordsPersist(siteId);
-      availableCount = persisted.finalCount;
-    }
+    const availableCount = await countUnusedKeywords(siteId);
+    let finalInventoryCount = availableCount;
+    let keywordMessage = `Initial keyword inventory already met target with ${availableCount} unused keywords.`;
 
     if (availableCount < targetKeywordCount) {
-      throw new Error(`Keyword research finished with ${availableCount} unused keywords; ${targetKeywordCount} are required.`);
+      const requiredCount = targetKeywordCount - availableCount;
+      const keywordResearch = await runAdaptiveKeywordResearch(siteId, requiredCount);
+      finalInventoryCount = keywordResearch.finalInventoryCount;
+      keywordMessage =
+        `Initial keyword inventory ready with ${finalInventoryCount} unused keywords. ` +
+        `Started at ${formatKeywordTarget(keywordResearch.startingTarget)} and settled on ${formatKeywordTarget(keywordResearch.effectiveTarget)} ` +
+        `after ${keywordResearch.attemptCount} attempt${keywordResearch.attemptCount === 1 ? "" : "s"}, ` +
+        `producing ${keywordResearch.qualifyingCount} qualifying keywords (${keywordResearch.insertedCount} inserted this run).`;
+    }
+
+    if (finalInventoryCount < targetKeywordCount) {
+      throw new Error(`Keyword research finished with ${finalInventoryCount} unused keywords; ${targetKeywordCount} are required.`);
     }
 
     await withTransaction(async (client) => {
@@ -829,7 +959,7 @@ Return JSON with:
               updated_at = now()
           where site_id = $1
         `,
-        [siteId, `Initial keyword inventory ready with ${availableCount} unused keywords (${totalInserted} newly inserted).`],
+        [siteId, keywordMessage],
       );
     });
   } catch (error) {
@@ -903,7 +1033,7 @@ async function handleKeywordsInventoryAudit(siteId?: string) {
   `, [siteId ?? null]);
 
   for (const row of result.rows) {
-    await enqueueJob("keywords.seed_generate", { siteId: row.id, batchSize: Math.min(15, Math.max(5, row.missing_count)) }, "site", row.id);
+    await enqueueJob("keywords.seed_generate", { siteId: row.id, requiredCount: row.missing_count }, "site", row.id);
   }
 
   return { queued: result.rowCount };
@@ -1029,7 +1159,10 @@ Return JSON in the form {"keywords":[{"keyword":"...","category":"...","clusterL
           item.clusterLabel ? String(item.clusterLabel) : categoryName,
           typeof item.searchVolume === "number" ? item.searchVolume : null,
           typeof item.difficulty === "number" ? item.difficulty : null,
-          JSON.stringify({ generatedAt: new Date().toISOString() }),
+          JSON.stringify({
+            generatedAt: new Date().toISOString(),
+            researchRunId: options.researchRunId ?? null,
+          }),
         ],
       );
       inserted += insertResult.rowCount ?? 0;
@@ -1038,7 +1171,7 @@ Return JSON in the form {"keywords":[{"keyword":"...","category":"...","clusterL
 
   // Chain to the expand step for further enrichment
   if (options.enqueueNext ?? true) {
-    await enqueueJob("keywords.expand", { siteId }, "site", siteId);
+    await enqueueJob("keywords.expand", { siteId, researchRunId: options.researchRunId ?? null }, "site", siteId);
   }
 
   return { inserted };
@@ -1052,13 +1185,24 @@ async function handleKeywordsExpand(siteId: string, options: KeywordPipelineOpti
 
   // Get seed keywords that were recently generated (within last hour)
   const seedKeywords = await query<{ keyword: string }>(
-    "select keyword from keyword_candidates where site_id = $1 and created_at >= now() - interval '1 hour' order by created_at desc limit 20",
-    [siteId],
+    `
+      select keyword
+      from keyword_candidates
+      where site_id = $1
+        and source = 'generated'
+        and (
+          ($2::text is not null and coalesce(metadata_json->>'researchRunId', '') = $2)
+          or ($2::text is null and created_at >= now() - interval '1 hour')
+        )
+      order by created_at desc
+      limit 20
+    `,
+    [siteId, options.researchRunId ?? null],
   );
 
   if (seedKeywords.rows.length === 0) {
     if (options.enqueueNext ?? true) {
-      await enqueueJob("keywords.cluster_review", { siteId }, "site", siteId);
+      await enqueueJob("keywords.cluster_review", { siteId, researchRunId: options.researchRunId ?? null }, "site", siteId);
     }
     return { expanded: 0, reason: "No recent seed keywords to expand" };
   }
@@ -1141,7 +1285,17 @@ async function handleKeywordsExpand(siteId: string, options: KeywordPipelineOpti
         `insert into keyword_candidates (site_id, keyword, cluster_label, source, search_volume, difficulty, metadata_json)
          values ($1, $2, 'expanded', 'dataforseo', $3, $4, $5)
          on conflict (site_id, keyword) do nothing`,
-        [siteId, item.keyword, item.volume, item.difficulty, JSON.stringify({ expandedAt: new Date().toISOString(), source: item.source })],
+        [
+          siteId,
+          item.keyword,
+          item.volume,
+          item.difficulty,
+          JSON.stringify({
+            expandedAt: new Date().toISOString(),
+            source: item.source,
+            researchRunId: options.researchRunId ?? null,
+          }),
+        ],
       );
       expanded += insertResult.rowCount ?? 0;
     }
@@ -1149,7 +1303,7 @@ async function handleKeywordsExpand(siteId: string, options: KeywordPipelineOpti
 
   // Chain to cluster review
   if (options.enqueueNext ?? true) {
-    await enqueueJob("keywords.cluster_review", { siteId }, "site", siteId);
+    await enqueueJob("keywords.cluster_review", { siteId, researchRunId: options.researchRunId ?? null }, "site", siteId);
   }
 
   return { expanded };
@@ -1163,8 +1317,16 @@ async function handleKeywordsClusterReview(siteId: string, options: KeywordPipel
 
   // Load all unclustered/recently added keywords
   const keywordsResult = await query<{ id: string; keyword: string; cluster_label: string | null; category_id: string | null }>(
-    "select id, keyword, cluster_label, category_id from keyword_candidates where site_id = $1 and used = false order by created_at desc limit 200",
-    [siteId],
+    `
+      select id, keyword, cluster_label, category_id
+      from keyword_candidates
+      where site_id = $1
+        and used = false
+        and ($2::text is null or coalesce(metadata_json->>'researchRunId', '') = $2)
+      order by created_at desc
+      limit 200
+    `,
+    [siteId, options.researchRunId ?? null],
   );
 
   if (keywordsResult.rows.length === 0) {
@@ -1255,20 +1417,41 @@ Return JSON: {"approved":[{"keyword":"...","clusterLabel":"...","category":"..."
 
   // Chain to persist step
   if (options.enqueueNext ?? true) {
-    await enqueueJob("keywords.persist", { siteId }, "site", siteId);
+    await enqueueJob("keywords.persist", { siteId, researchRunId: options.researchRunId ?? null }, "site", siteId);
   }
 
   return { updated, removed };
 }
 
-async function handleKeywordsPersist(siteId: string) {
+async function handleKeywordsPersist(siteId: string, options: KeywordPersistOptions = {}) {
   const site = await getSiteContext(siteId);
   if (!site) {
     throw new Error(`Site ${siteId} not found`);
   }
 
+  const effectiveTarget = normalizeKeywordTarget(options.effectiveTarget ?? getSiteKeywordTarget(site));
+  if (options.researchRunId) {
+    await query(
+      `
+        delete from keyword_candidates
+        where site_id = $1
+          and coalesce(metadata_json->>'researchRunId', '') = $2
+          and (
+            search_volume is null
+            or difficulty is null
+            or search_volume < $3
+            or difficulty > $4
+          )
+      `,
+      [siteId, options.researchRunId, effectiveTarget.minSearchVolume, effectiveTarget.maxDifficulty],
+    );
+  }
+
   const targetCount = Math.max(site.posts_per_day * 30, 5);
   const availableCount = await countUnusedKeywords(siteId);
+  let qualifyingCount = options.researchRunId
+    ? await countQualifyingKeywordsForRun(siteId, options.researchRunId, effectiveTarget)
+    : 0;
 
   // Step B11: Validate inventory coverage
   const clusterDistribution = await query<{ cluster_label: string | null; count: number }>(
@@ -1300,22 +1483,32 @@ async function handleKeywordsPersist(siteId: string) {
           select id from keyword_candidates
           where site_id = $1 and used = false
           order by
-            case when search_volume is null then 0 else 1 end asc,
+            case
+              when search_volume is null or difficulty is null then 0
+              when search_volume >= $3 and difficulty <= $4 then 2
+              else 1
+            end asc,
+            coalesce(search_volume, 0) asc,
             coalesce(difficulty, 100) desc,
             created_at desc
           limit $2
         )
       `,
-      [siteId, excessCount],
+      [siteId, excessCount, effectiveTarget.minSearchVolume, effectiveTarget.maxDifficulty],
     );
   }
 
   const finalCount = await countUnusedKeywords(siteId);
+  if (options.researchRunId) {
+    qualifyingCount = await countQualifyingKeywordsForRun(siteId, options.researchRunId, effectiveTarget);
+  }
 
   return {
     siteId,
     targetCount,
     finalCount,
+    qualifyingCount,
+    effectiveTarget,
     clusterDistribution: clusterDistribution.rows,
     difficultyDistribution: difficultyDistribution.rows,
     healthy: finalCount >= site.posts_per_day * 3,
@@ -2947,16 +3140,25 @@ export async function runJob(job: BossJob) {
         result = await handleKeywordsInventoryAudit();
         break;
       case "keywords.seed_generate":
-        result = await handleKeywordSeedGenerate(String(job.data?.siteId ?? ""), Number(job.data?.batchSize ?? 8));
+        result = await runAdaptiveKeywordResearch(
+          String(job.data?.siteId ?? ""),
+          Number(job.data?.requiredCount ?? job.data?.batchSize ?? 8),
+        );
         break;
       case "keywords.expand":
-        result = await handleKeywordsExpand(String(job.data?.siteId ?? ""));
+        result = await handleKeywordsExpand(String(job.data?.siteId ?? ""), {
+          researchRunId: job.data?.researchRunId ? String(job.data.researchRunId) : undefined,
+        });
         break;
       case "keywords.cluster_review":
-        result = await handleKeywordsClusterReview(String(job.data?.siteId ?? ""));
+        result = await handleKeywordsClusterReview(String(job.data?.siteId ?? ""), {
+          researchRunId: job.data?.researchRunId ? String(job.data.researchRunId) : undefined,
+        });
         break;
       case "keywords.persist":
-        result = await handleKeywordsPersist(String(job.data?.siteId ?? ""));
+        result = await handleKeywordsPersist(String(job.data?.siteId ?? ""), {
+          researchRunId: job.data?.researchRunId ? String(job.data.researchRunId) : undefined,
+        });
         break;
       case "rss.item_ingest":
       case "content.image_plan_generate":

@@ -13,6 +13,7 @@ import {
   saveSiteAutomationAction,
   saveSiteBasicsAction,
   saveSiteCredentialsAction,
+  saveSiteKeywordSettingsAction,
   saveSiteProfileAction,
   saveSiteWordPressSelectionsAction,
   testSiteCredentialsAction,
@@ -25,6 +26,7 @@ import { requireAdminSession } from "@/lib/auth/server";
 import { IMAGE_DENSITY_OPTION_LABELS, IMAGE_DENSITY_OPTIONS } from "@/lib/content/image-density";
 import { getSiteDetail, listSiteAuthors, listSiteCategories, listSiteContent, listSiteFeeds, listSiteJobs, listSiteKeywordsPage } from "@/lib/data/dashboard";
 import { query } from "@/lib/db";
+import { getKeywordSettingsWarning } from "@/lib/keywords/settings";
 import { formatWordPressRoleLabel } from "@/lib/providers/wordpress";
 import type { ContentRecord, FeedRecord, JobRecord, KeywordRecord, SiteAuthorRecord, SiteCategoryRecord, SiteDetailRecord } from "@/lib/types";
 
@@ -602,6 +604,77 @@ function renderKeywordsTable(keywords: KeywordRecord[]) {
   );
 }
 
+function renderKeywordsTab(
+  site: SiteDetailRecord,
+  keywordPage: Awaited<ReturnType<typeof listSiteKeywordsPage>>,
+) {
+  const keywordWarning = getKeywordSettingsWarning({
+    maxDifficulty: site.keywordMaxDifficulty,
+    minSearchVolume: site.keywordMinSearchVolume,
+  });
+
+  return (
+    <>
+      <Panel title="Keyword Settings" subtitle="Each site starts here, then BAM relaxes volume first and difficulty second only if needed.">
+        <form action={saveSiteKeywordSettingsAction} className="form-grid two">
+          <input type="hidden" name="siteId" value={site.id} />
+          <input type="hidden" name="returnTab" value="keywords" />
+          <div className="field">
+            <label htmlFor="keywordMaxDifficulty">Max keyword difficulty</label>
+            <input
+              id="keywordMaxDifficulty"
+              name="keywordMaxDifficulty"
+              type="number"
+              min="0"
+              max="100"
+              defaultValue={site.keywordMaxDifficulty}
+              required
+            />
+            <p className="field-hint">BAM starts by preferring keywords at or below this difficulty score.</p>
+          </div>
+          <div className="field">
+            <label htmlFor="keywordMinSearchVolume">Min monthly search volume</label>
+            <input
+              id="keywordMinSearchVolume"
+              name="keywordMinSearchVolume"
+              type="number"
+              min="0"
+              defaultValue={site.keywordMinSearchVolume}
+              required
+            />
+            <p className="field-hint">If this is too strict, BAM lowers volume before it considers harder keywords.</p>
+          </div>
+          <div className="chip-row">
+            <button className="button" type="submit">
+              Save keyword settings
+            </button>
+            <span className="chip">Difficulty {"<="} {site.keywordMaxDifficulty}</span>
+            <span className="chip">Volume {">="} {site.keywordMinSearchVolume}</span>
+          </div>
+        </form>
+        <div className="footer-note">
+          <p>BAM saves a looser baseline automatically when that is what finally produces enough relevant keywords for this site.</p>
+          {keywordWarning ? <p className="form-warning">{keywordWarning}</p> : null}
+        </div>
+      </Panel>
+
+      <Panel title="Keywords">
+        {renderKeywordsTable(keywordPage.keywords)}
+        <div className="panel-body" style={{ paddingTop: 12 }}>
+          <PaginationNav
+            pathname={`/sites/${site.id}`}
+            currentPage={keywordPage.currentPage}
+            pageSize={keywordPage.pageSize}
+            totalCount={keywordPage.totalCount}
+            pageParamName="keywordPage"
+            query={{ tab: "keywords" }}
+          />
+        </div>
+      </Panel>
+    </>
+  );
+}
+
 function renderContentTable(content: ContentRecord[]) {
   if (!content.length) {
     return <EmptyState title="No content yet" description="Content records appear here once blog or news automation begins creating work for this site." />;
@@ -776,21 +849,7 @@ export default async function SiteDetailPage({ params, searchParams }: SiteDetai
       {currentTab === "profile" ? renderProfileTab(site) : null}
       {currentTab === "automation" ? renderAutomationTab(site) : null}
       {currentTab === "feeds" ? renderFeedsTab(site, feeds) : null}
-      {currentTab === "keywords" ? (
-        <Panel title="Keywords">
-          {renderKeywordsTable(keywordPage.keywords)}
-          <div className="panel-body" style={{ paddingTop: 12 }}>
-            <PaginationNav
-              pathname={`/sites/${site.id}`}
-              currentPage={keywordPage.currentPage}
-              pageSize={keywordPage.pageSize}
-              totalCount={keywordPage.totalCount}
-              pageParamName="keywordPage"
-              query={{ tab: "keywords" }}
-            />
-          </div>
-        </Panel>
-      ) : null}
+      {currentTab === "keywords" ? renderKeywordsTab(site, keywordPage) : null}
       {currentTab === "content" ? (
         <Panel title="Content Pipeline">
           {renderContentTable(content)}

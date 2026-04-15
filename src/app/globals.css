@@ -638,6 +638,16 @@ textarea { resize: vertical; }
   border: 1px solid rgba(239, 68, 68, 0.2);
 }
 
+.form-warning {
+  margin-top: 10px !important;
+  padding: 10px 14px;
+  border-radius: 6px;
+  background: rgba(245, 158, 11, 0.12);
+  color: #fbbf24 !important;
+  font-size: 0.85rem;
+  border: 1px solid rgba(245, 158, 11, 0.2);
+}
+
 /* ── Utilities ──────────────────────────────────────────────────── */
 
 .mono {
